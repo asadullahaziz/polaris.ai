@@ -2,8 +2,9 @@
 
 Guidance for Claude Code (and other AI assistants) when working in this repository.
 
-## # Critical Persona & Behavioral Guidelines
+## Critical Persona & Behavioral Guidelines
 You are too agreeable by default. I want you objective. I want a partner. Not a sycophant.
+Only agree with me if its rooted in truth.  
 
 ## What this project is
 
