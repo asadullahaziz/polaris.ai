@@ -22,22 +22,39 @@ In-App Communication, and Polaris AI (agent mode vs. copilot mode).
 
 ## Current status
 
-Brand-new project. As of this writing the repo contains only documentation
-(`README.md`, `.claude/context/PRODUCT.md`, `CLAUDE.local.md`) — **no application code or
-scaffolding yet**.
+Design phase, well underway — **no application code or scaffolding yet** (the repo is
+documentation only). But the design is largely settled: product definition, PRD,
+feature/flow spec, agent architecture, and a full data model/schema are drafted under
+`.claude/`. The next step is the implementation plan.
+
+Key design docs (keep these authoritative — update them when a decision changes):
+- [`.claude/context/PRODUCT.md`](./.claude/context/PRODUCT.md) — product definition (what/why)
+- [`.claude/docs/PRD.md`](./.claude/docs/PRD.md) — product requirements
+- [`.claude/docs/features.md`](./.claude/docs/features.md) — features & user flows
+- [`.claude/docs/architecture.md`](./.claude/docs/architecture.md) — Polaris agent architecture (LangGraph)
+- [`.claude/context/data_model_decisions.md`](./.claude/context/data_model_decisions.md) — data model & schema decisions
+- [`.claude/context/domain_wholesaling.md`](./.claude/context/domain_wholesaling.md) — domain primer
 
 ## Tech stack
 
 **Decided:**
 - **Frontend:** Next.js
 - **Backend:** Python · Django REST Framework (DRF)
-- **Database:** PostgreSQL
+- **Database:** PostgreSQL **+ PostGIS** (buy-box geography + behavioral "bought-in-area" matching)
+- **AI/LLM:** via **OpenRouter** — Sonnet 4.6 (workhorse: copilot + auto-responder),
+  Opus 4.8 (escalation), Haiku 4.5 (bulk ranking/classification)
+- **Agent framework:** **LangGraph** (copilot · auto-responder turn · outreach fan-out);
+  checkpointer = Postgres (`langgraph-checkpoint-postgres`)
+- **Durable execution / async orchestration:** **Inngest** (events, retries, fan-out, long human waits)
+- **Real-time transport:** **WebSockets** (chat + presence on one socket)
+- **No vector store in v1** — ranking is behavioral-first; revisit only if semantic recall is needed
+- **Notifications:** in-app only (no email/SMS)
 
-**Not yet decided** (see `.claude/context/PRODUCT.md` §6/§8): auth, AI/LLM provider & agent framework,
-vector store, real-time messaging, media storage, geospatial (PostGIS?), task queue,
-search infra, email/notifications, hosting/CI, payments. **Do not silently pick one** of
-these — propose options and confirm with the user before introducing a major dependency
-or service.
+See `.claude/docs/architecture.md` and `.claude/context/data_model_decisions.md` for rationale.
+
+**Not yet decided** (see `.claude/context/PRODUCT.md` §6/§8): auth, media storage,
+search infra, hosting/CI, payments. **Do not silently pick one** of these — propose
+options and confirm with the user before introducing a major dependency or service.
 
 ## How to work in this repo
 

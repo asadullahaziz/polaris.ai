@@ -14,5 +14,8 @@ Polaris AI works as both an **agent** that can do the work for either side and a
 
 - **Frontend:** Next.js
 - **Backend:** Python · Django REST Framework (DRF)
-- **Database:** PostgreSQL
-- _Additional libraries and services: to be decided._
+- **Database:** PostgreSQL + PostGIS
+- **AI agents:** LangGraph, with models served via OpenRouter (Claude Sonnet / Opus / Haiku)
+- **Async orchestration:** Inngest
+- **Real-time messaging:** WebSockets
+- _Auth, media storage, search, hosting, and payments: to be decided._
