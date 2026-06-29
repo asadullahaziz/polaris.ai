@@ -32,6 +32,7 @@ Key design docs (keep these authoritative — update them when a decision change
 - [`.claude/docs/PRD.md`](./.claude/docs/PRD.md) — product requirements
 - [`.claude/docs/features.md`](./.claude/docs/features.md) — features & user flows
 - [`.claude/docs/architecture.md`](./.claude/docs/architecture.md) — Polaris agent architecture (LangGraph)
+- [`.claude/docs/matching_and_data.md`](./.claude/docs/matching_and_data.md) — matching/ranking engine, comping & King County seed data
 - [`.claude/context/data_model_decisions.md`](./.claude/context/data_model_decisions.md) — data model & schema decisions
 - [`.claude/context/domain_wholesaling.md`](./.claude/context/domain_wholesaling.md) — domain primer
 
