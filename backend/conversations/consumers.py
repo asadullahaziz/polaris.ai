@@ -42,9 +42,7 @@ class SpikeConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
         await self.send(
-            text_data=json.dumps(
-                {"type": "spike.ready", "data": {"user": user.get_username()}}
-            )
+            text_data=json.dumps({"type": "spike.ready", "data": {"user": user.get_username()}})
         )
 
     async def disconnect(self, code):
@@ -70,9 +68,7 @@ class SpikeConsumer(AsyncWebsocketConsumer):
         )
 
         # (b) GeoDjango ST_DWithin via the DAL.
-        geo_within = await count_points_within_km(
-            _SEATTLE_LON, _SEATTLE_LAT, _GEO_RADIUS_KM
-        )
+        geo_within = await count_points_within_km(_SEATTLE_LON, _SEATTLE_LAT, _GEO_RADIUS_KM)
 
         # (c) echo the round-trip.
         await self.send(
@@ -100,9 +96,7 @@ class SpikeConsumer(AsyncWebsocketConsumer):
         except Exception as exc:  # pragma: no cover - dev server may still be booting
             log.warning("inngest send failed: %s", exc)
             await self.send(
-                text_data=json.dumps(
-                    {"type": "inngest.error", "data": {"message": str(exc)}}
-                )
+                text_data=json.dumps({"type": "inngest.error", "data": {"message": str(exc)}})
             )
 
     async def spike_tick(self, event):

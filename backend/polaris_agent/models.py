@@ -20,7 +20,7 @@ the defaults below as authoritative.
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from functools import cache
 
 from django.conf import settings
 
@@ -40,7 +40,7 @@ def model_id_for(role: str) -> str:
     return os.environ.get(env_var, default)
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_model(role: str = "workhorse", *, temperature: float = 0.0):
     """
     Return a LangChain chat model for the given role, built for the configured
