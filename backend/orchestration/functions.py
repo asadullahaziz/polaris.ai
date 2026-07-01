@@ -4,7 +4,7 @@ Inngest functions aggregated for the serve mount in config.urls.
 P0: a single `spike_ping` that closes the loop event -> function -> channel
 layer -> socket, proving Inngest round-trips back to the browser (review #8).
 Each domain app adds its own functions.py in later phases; this list aggregates
-them (conversations = auto-responder, outreach = fan-out).
+them (P2 outreach = fan-out; P3 conversations = auto-responder).
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import logging
 
 import inngest
 from channels.layers import get_channel_layer
+
+from outreach.functions import functions as outreach_functions
 
 from .client import inngest_client
 
@@ -41,4 +43,4 @@ async def spike_ping(ctx: inngest.Context) -> dict:
 
 
 # Registered with inngest.django.serve(...) in config.urls.
-functions = [spike_ping]
+functions = [spike_ping, *outreach_functions]

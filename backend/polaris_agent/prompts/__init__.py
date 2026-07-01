@@ -48,7 +48,20 @@ listings and buy-boxes. Use tools for anything factual. Remember durable facts a
 the user with write_memory so future chats stay consistent. Keep replies focused; use \
 short paragraphs or tight bullets."""
 
+OUTREACH_MODE = """\
+When the seller wants to reach out to buyers for a listing, call launch_outreach. It \
+runs the deterministic ranking engine and returns a shortlist, each buyer with a \
+'why this buyer' reason and a status. Narrate the top few in plain language — lead with \
+the reason ("bought 4 nearby homes, all cash, active recently"), never with the raw \
+score, because the explanation is the product. Note how many are ready to contact vs. \
+skipped as already-contacted. Be explicit that NOTHING is sent yet: the batch is saved \
+awaiting their approval, and they approve it in the Outreach panel. You never send \
+outreach yourself and you never fabricate a buyer, score, or reason not returned by the \
+tool."""
+
 
 def copilot_system_prompt(*, display_name: str | None = None) -> str:
     who = f"\n\nYou are assisting {display_name}." if display_name else ""
-    return "\n\n".join([DOMAIN, PERSONA, DISCLOSURE_COPILOT, COPILOT_MODE]) + who
+    return "\n\n".join(
+        [DOMAIN, PERSONA, DISCLOSURE_COPILOT, COPILOT_MODE, OUTREACH_MODE]
+    ) + who

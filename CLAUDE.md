@@ -47,9 +47,35 @@ phased plan in [`.claude/plans/implementation_plan.md`](./.claude/plans/implemen
 - **Frontend** — a copilot chat UI (sidebar, streamed markdown, comp-table rendering) + a right
   rail for listings/valuation and the shared context editor.
 
-Backend suite green (`make test`): schema, engine, seed idempotency/rebase, copilot plumbing +
-the P0 spike. **⛔ Gate to P2:** the copilot slice demoed in the browser (mandatory human
-checkpoint — plan P1). **Resume:** demo P1, then P2 (outreach fan-out).
+**Phase 2 (Outreach fan-out · Graph 3)** is built:
+- **`rank_buyers`** (`matching/engine.py`) — deterministic, behavioral-first weighted score
+  (bought-in-area .28 / price-band .18 / strategy .15 / recency .12 / volume .10 / cash .07 /
+  relationship .10 + a registered-only buy-box-completeness bonus) with a per-feature breakdown
+  and a human "why this buyer" reason. No LLM; degrades gracefully for prospects.
+- **`outreach/service.py`** — the invariant-bearing, pure-sync core: `launch_outreach` (rank →
+  ledger-dedup → templated per-buyer openers → persist `campaign='awaiting_approval'` +
+  `recipients='pending'` + notification), `approve_campaign`/`cancel_campaign` (batch send-gate),
+  and `send_recipient` (the **ledger guarantee** — skip-if-sent + partial-unique `status='sent'`;
+  opener idempotency via `dedup_key` + ON CONFLICT DO NOTHING; opens the one shared thread).
+- **Inngest fan-out** (`outreach/functions.py`) — `outreach/approved`-triggered async fn: one
+  durable step per recipient (`concurrency`, `retries`), **templated** `outreach.progress` ticks
+  pushed to the seller's copilot chat over the channel layer (no LLM), then **one** narrated
+  summary (templated fallback) persisted + pushed as `outreach.summary`.
+- **Copilot integration** — `launch_outreach` is a real copilot tool (conversation threaded via
+  `RunnableConfig`); `CopilotConsumer` joins group `copilot_{user_id}` and forwards the tick/summary
+  events. Rank/draft/present IS the copilot turn (architecture §6) — no separate outreach LLM graph.
+- **REST** — `/api/outreach/campaigns/` list/detail + `approve`/`cancel` (approve emits the
+  fan-out event via `send_sync`).
+- **Frontend** — an Outreach right-rail tab (ranked shortlist w/ reasons, approve/cancel) + live
+  `outreach.progress`/`outreach.summary` handling in the chat.
+
+Backend suite green (`make test`, 21 passed): schema, engine (comps + `rank_buyers`), seed
+idempotency/rebase, copilot plumbing, **outreach ranking determinism + ledger + fan-out
+idempotency + launch→approve→send slice**, and the P0 spike. **⛔ Gate to P3:** the outreach slice
+demoed in the browser (mandatory human checkpoint — plan P2); the live Inngest fan-out + copilot
+narration are that browser gate (LLM-free invariants are unit-tested). **Deferred to P3:** the
+buyer-facing thread/inbox UI (coupled to presence + the auto-responder). **Resume:** demo P2, then
+P3 (auto-responder, buyer role first).
 
 Key design docs (keep these authoritative — update them when a decision changes):
 - [`.claude/context/PRODUCT.md`](./.claude/context/PRODUCT.md) — product definition (what/why)

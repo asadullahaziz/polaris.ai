@@ -182,3 +182,38 @@ export const addMemory = (content: string, namespace = "general") =>
 
 export const getPreferences = () =>
   apiFetch("/api/auth/preferences/").then((r) => json<Record<string, unknown>>(r));
+
+// ---- Outreach campaigns (P2.7) ----------------------------------------------
+export type OutreachRecipient = {
+  id: number;
+  name: string;
+  kind: "registered" | "prospect";
+  rank_score: string | null;
+  rank_reason: string | null;
+  draft_body: string | null;
+  status: string;
+  conversation_id: number | null;
+};
+
+export type OutreachCampaign = {
+  id: number;
+  listing: number;
+  listing_address: string | null;
+  copilot_conversation: number | null;
+  status: string;
+  created_at: string;
+  recipients: OutreachRecipient[];
+};
+
+export const listCampaigns = () =>
+  apiFetch("/api/outreach/campaigns/").then((r) => json<OutreachCampaign[]>(r));
+
+export const approveCampaign = (id: number) =>
+  apiFetch(`/api/outreach/campaigns/${id}/approve/`, { method: "POST", body: "{}" }).then((r) =>
+    json<Record<string, unknown>>(r),
+  );
+
+export const cancelCampaign = (id: number) =>
+  apiFetch(`/api/outreach/campaigns/${id}/cancel/`, { method: "POST", body: "{}" }).then((r) =>
+    json<Record<string, unknown>>(r),
+  );

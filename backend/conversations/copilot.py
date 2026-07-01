@@ -37,14 +37,33 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             await self.close(code=4401)  # unauthenticated
             return
         self.user = user
+        # Join the per-user group so the Inngest outreach fan-out (P2.4) can push
+        # progress ticks + the final summary back into this chat over the channel layer.
+        self.group_name = f"copilot_{user.id}"
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
         checkpointer = await get_checkpointer()
         name = await dal.display_name(user.id)
         self.agent = build_copilot_agent(checkpointer, principal_id=user.id, display_name=name)
         await self.accept()
         await self._send("copilot.ready", {"user": user.get_username()})
 
+    async def disconnect(self, code):
+        group = getattr(self, "group_name", None)
+        if group is not None:
+            await self.channel_layer.group_discard(group, self.channel_name)
+
     async def _send(self, type_: str, data: dict) -> None:
         await self.send(text_data=json.dumps({"type": type_, "data": data}))
+
+    # ---- Channel-layer handlers: Inngest outreach fan-out → this socket ----------
+    async def outreach_progress(self, event):
+        """Templated 'Sent 3/10' tick from the fan-out (no LLM). group_send type
+        'outreach.progress' → this method."""
+        await self._send("outreach.progress", event.get("data", {}))
+
+    async def outreach_summary(self, event):
+        """Final NL summary (one copilot turn) persisted + pushed by the fan-out."""
+        await self._send("outreach.summary", event.get("data", {}))
 
     async def receive(self, text_data=None, bytes_data=None):
         try:
@@ -79,7 +98,14 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         buf: list[str] = []
         async for chunk, _meta in self.agent.astream(
             {"messages": history},
-            config={"configurable": {"thread_id": f"copilot:{conv_id}:{len(history)}"}},
+            config={
+                "configurable": {
+                    "thread_id": f"copilot:{conv_id}:{len(history)}",
+                    # Threaded to tools (launch_outreach) so a persisted campaign knows
+                    # which chat to post progress/summary back into (P2.4).
+                    "conversation_id": conv_id,
+                }
+            },
             stream_mode="messages",
         ):
             # Stream only the assistant's natural-language tokens. `messages` mode also

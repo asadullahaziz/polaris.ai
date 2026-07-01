@@ -295,6 +295,16 @@ set_mandate_for_listing = sync_to_async(_set_mandate_for_listing)
 get_mandate_for_listing = sync_to_async(_get_mandate_for_listing)
 
 
+# ---- Outreach (P2) -------------------------------------------------------------
+def _launch_outreach(seller_id: int, listing_id: int, conversation_id=None, limit: int = 10) -> dict:
+    from outreach.service import launch_outreach
+
+    return launch_outreach(seller_id, listing_id, conversation_id=conversation_id, limit=limit)
+
+
+launch_outreach = sync_to_async(_launch_outreach)
+
+
 # ---- User display name (for the system prompt) --------------------------------
 def _display_name(user_id: int) -> str | None:
     from django.contrib.auth import get_user_model
