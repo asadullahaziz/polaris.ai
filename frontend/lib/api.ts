@@ -16,6 +16,9 @@ export type User = {
   first_name: string;
   last_name: string;
   is_staff: boolean;
+  full_name: string | null;
+  preferred_channel: string;
+  preferences: Record<string, unknown>;
 };
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS", "TRACE"]);
@@ -81,3 +84,101 @@ export async function fetchMe(): Promise<User | null> {
   if (!res.ok) throw new Error("Failed to load current user");
   return res.json();
 }
+
+// ---- Copilot conversations (P1.2) -------------------------------------------
+export type Conversation = {
+  id: number;
+  title: string | null;
+  status: string;
+  updated_at: string;
+};
+
+export type Message = {
+  id: number;
+  author_type: "human" | "agent" | "system";
+  body: string;
+  created_at: string;
+};
+
+async function json<T>(res: Response): Promise<T> {
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export const listConversations = () =>
+  apiFetch("/api/copilot/conversations/").then((r) => json<Conversation[]>(r));
+
+export const createConversation = () =>
+  apiFetch("/api/copilot/conversations/", { method: "POST", body: "{}" }).then((r) =>
+    json<Conversation>(r),
+  );
+
+export const renameConversation = (id: number, title: string) =>
+  apiFetch(`/api/copilot/conversations/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  }).then((r) => json<Conversation>(r));
+
+export const deleteConversation = (id: number) =>
+  apiFetch(`/api/copilot/conversations/${id}/`, { method: "DELETE" });
+
+export const loadMessages = (id: number) =>
+  apiFetch(`/api/copilot/conversations/${id}/messages/`).then((r) => json<Message[]>(r));
+
+// ---- Listings + valuation (P1.2 / P1.11) ------------------------------------
+export type Listing = {
+  id: number;
+  status: string;
+  asking_price: number | null;
+  property: {
+    address_raw: string;
+    beds: number | null;
+    sqft: number | null;
+    baths: number | null;
+    condition: number | null;
+  } | null;
+};
+
+export type Comp = {
+  id: number;
+  address: string;
+  beds: number | null;
+  sqft: number | null;
+  grade: number | null;
+  price: number | null;
+  ppsf: number | null;
+  sold_on: string | null;
+  distance_mi: number | null;
+};
+
+export type Valuation = {
+  low: number | null;
+  point: number | null;
+  high: number | null;
+  basis: Record<string, unknown>;
+  comps: Comp[];
+  subject?: Record<string, unknown>;
+};
+
+export const listListings = () =>
+  apiFetch("/api/listings/").then((r) => json<Listing[]>(r));
+
+export const getValuation = (id: number, arv = false) =>
+  apiFetch(`/api/listings/${id}/valuation/?arv=${arv ? 1 : 0}`).then((r) =>
+    json<Valuation>(r),
+  );
+
+// ---- Shared context store (P1.10) -------------------------------------------
+export type Memory = { id: number; namespace: string; content: string };
+
+export const listMemory = () =>
+  apiFetch("/api/context/memory/").then((r) => json<Memory[]>(r));
+
+export const addMemory = (content: string, namespace = "general") =>
+  apiFetch("/api/context/memory/", {
+    method: "POST",
+    body: JSON.stringify({ content, namespace }),
+  }).then((r) => json<Memory>(r));
+
+export const getPreferences = () =>
+  apiFetch("/api/auth/preferences/").then((r) => json<Record<string, unknown>>(r));

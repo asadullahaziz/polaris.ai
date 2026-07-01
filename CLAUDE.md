@@ -27,14 +27,29 @@ In-App Communication, and Polaris AI (agent mode vs. copilot mode).
 and the system-design review remediation, all under `.claude/`). Execution follows the
 phased plan in [`.claude/plans/implementation_plan.md`](./.claude/plans/implementation_plan.md).
 
-**Phase 0 (scaffolding + one-command bring-up + the hard-seam spike)** is built: a
-`backend/` Django 5.2 ASGI project (10 domain apps + the isolated `polaris_agent/`
-package), a `frontend/` Next.js 15 app, and `docker-compose.yml` for the 6-service stack
-(postgres+PostGIS, redis, minio, inngest, backend, frontend). The spike proves review #8:
-session-cookie auth → authenticated WebSocket → async LangGraph over a shared
-`AsyncPostgresSaver` pool → GeoDjango `ST_DWithin` → Inngest round-trip. **Gate to P1:**
-the spike test green + the browser round-trip demoed (⛔ mandatory human checkpoint —
-plan P0). **Resume:** verify the bring-up, then P1 (copilot slice + `seed_kc`).
+**Phase 0** (scaffolding + one-command bring-up + the hard-seam spike) is built and green.
+
+**Phase 1 (Copilot end-to-end · Graph 1 + the King County seed)** is built:
+- **Schema** — all 18 domain models (`accounts`/`catalog`/`buyers`/`conversations`/`outreach`/
+  `agent_context`/`notifications`), migrations matched 1:1 to the DDL (partial-unique ledgers,
+  CHECK patterns, composite PKs, GiST + functional indexes). Verified in Postgres.
+- **`seed_kc`** — idempotent, date-rebased seed: ~21.4k KC comps + ~40 synthetic personas
+  (25 prospect / 15 registered w/ buy-boxes + mandates) + 15 active listings priced below market.
+  Wired into bring-up (entrypoint) and `make seed`.
+- **Engine** (`matching/engine.py`) — deterministic `get_comps` + `estimate_value` (+ARV) over
+  PostGIS with staged fallback. Unit-tested, no LLM.
+- **Copilot runtime** — `polaris_agent` tools (extract/create-listing/value/comps/mandate/memory),
+  composed prompt fragments, a ReAct graph (`create_react_agent` + shared checkpointer), and the
+  `CopilotConsumer` WS (rehydrate transcript → stream `copilot.token`/`copilot.done` → persist →
+  Haiku auto-title). Provider parity through OpenRouter verified (invoke/structured-output/tools).
+- **REST** — copilot conversations, listings + on-demand `/valuation`, and the shared context
+  store (memory + mandate + preferences).
+- **Frontend** — a copilot chat UI (sidebar, streamed markdown, comp-table rendering) + a right
+  rail for listings/valuation and the shared context editor.
+
+Backend suite green (`make test`): schema, engine, seed idempotency/rebase, copilot plumbing +
+the P0 spike. **⛔ Gate to P2:** the copilot slice demoed in the browser (mandatory human
+checkpoint — plan P1). **Resume:** demo P1, then P2 (outreach fan-out).
 
 Key design docs (keep these authoritative — update them when a decision changes):
 - [`.claude/context/PRODUCT.md`](./.claude/context/PRODUCT.md) — product definition (what/why)
@@ -108,11 +123,15 @@ docker-compose.yml       6 services, one .env; `docker compose up` = the whole s
 
 - **Bring up the whole stack:** `docker compose up --build` (or `make up`). Frontend on
   http://localhost:3000, API on http://localhost:8000, Inngest dev UI on :8288, MinIO
-  console on :9001. First boot generates migrations in-container, migrates, and creates a
-  demo login (`demo` / `demo12345`) + P0 geo fixtures.
+  console on :9001. First boot generates migrations in-container, migrates, creates a demo
+  login (`demo` / `demo12345`) + P0 geo fixtures, and runs `seed_kc` (P1 demo data).
+- **The P1 copilot demo:** open http://localhost:3000/copilot and log in. Use a **seed seller**
+  (`kc_seller_1` / `polaris123`) to see the 15 seeded listings and value them, or `demo` for a
+  fresh intake. Seed buyers are `kc_buyer_1..15` (same password); they have buy-boxes + history.
+- **Seed the demo data:** `make seed` (idempotent) · `make seed-reset` (rebuild w/ fresh dates).
 - **Fresh-clone reset:** `make down-v` (drops volumes) then `make up`.
-- **Run the P0 spike test (gate out of P0):** `make test` — runs
-  `makemigrations && pytest` in the backend container (GeoDjango + checkpointer + consumer).
+- **Run the test suite (the gate):** `make test` — `makemigrations && pytest` in the backend
+  container (schema, matching engine, seed idempotency/rebase, copilot plumbing, P0 spike).
 - **Migrations / shell / psql / format:** `make migrate` · `make shell` · `make psql` · `make fmt`.
 - **Regenerate the typed FE client** (backend must be up): `cd frontend && npm run gen:api`.
 

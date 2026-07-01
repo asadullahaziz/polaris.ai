@@ -23,6 +23,9 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/health/", health, name="health"),
     path("api/auth/", include("accounts.urls")),
+    path("api/", include("catalog.urls")),  # /api/listings/...
+    path("api/copilot/", include("conversations.urls")),  # /api/copilot/conversations/...
+    path("api/context/", include("agent_context.urls")),  # /api/context/memory/...
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
         "api/schema/swagger-ui/",

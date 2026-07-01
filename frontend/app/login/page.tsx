@@ -18,7 +18,7 @@ export default function LoginPage() {
     setError(null);
     try {
       await login(username, password);
-      router.push("/spike");
+      router.push("/copilot");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

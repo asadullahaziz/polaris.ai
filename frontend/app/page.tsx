@@ -3,11 +3,10 @@ import Link from "next/link";
 export default function Home() {
   return (
     <main className="mx-auto max-w-2xl p-8">
-      <h1 className="text-2xl font-semibold">Polaris AI — Phase 0 spike</h1>
+      <h1 className="text-2xl font-semibold">Polaris AI</h1>
       <p className="mt-2 text-gray-600 dark:text-gray-300">
-        Proves the review-#8 integration seam: session-cookie auth → authenticated
-        WebSocket → async LangGraph over a shared Postgres checkpointer →
-        GeoDjango <code>ST_DWithin</code> → Inngest round-trip.
+        Your AI real-estate agent &amp; copilot. Intake a listing, value it against real
+        King County comps, and set your agent&apos;s mandate — all from chat.
       </p>
       <div className="mt-6 flex gap-4">
         <Link
@@ -16,11 +15,11 @@ export default function Home() {
         >
           Log in
         </Link>
-        <Link
-          href="/spike"
-          className="rounded border border-gray-400 px-4 py-2"
-        >
-          Spike page
+        <Link href="/copilot" className="rounded border border-gray-400 px-4 py-2">
+          Open copilot
+        </Link>
+        <Link href="/spike" className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-500">
+          P0 spike
         </Link>
       </div>
     </main>

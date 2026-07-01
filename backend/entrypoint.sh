@@ -17,6 +17,11 @@ echo "[entrypoint] ensure demo user + P0 spike geo fixtures"
 python manage.py ensure_demo_user
 python manage.py ensure_spike_fixtures
 
+# P1 demo data (idempotent; re-runs are a no-op). A fresh clone reproduces the
+# identical demo: ~20k KC comps + synthetic personas + active listings.
+echo "[entrypoint] seed King County demo data"
+python manage.py seed_kc || echo "[entrypoint] seed_kc failed (non-fatal); run 'make seed' manually"
+
 # Local staticfiles (admin/DRF UI). Never blocks bring-up.
 python manage.py collectstatic --noinput >/dev/null 2>&1 || true
 

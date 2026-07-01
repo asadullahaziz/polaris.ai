@@ -21,15 +21,11 @@ class Command(BaseCommand):
         password = os.environ.get("DEMO_PASSWORD", "demo12345")
         email = os.environ.get("DEMO_EMAIL", "demo@polaris.local")
 
-        user, created = User.objects.get_or_create(
-            username=username, defaults={"email": email}
-        )
+        user, created = User.objects.get_or_create(username=username, defaults={"email": email})
         user.email = email
         user.set_password(password)
         # Superuser so /admin is usable in the demo; harmless in dev.
         user.is_staff = True
         user.is_superuser = True
         user.save()
-        self.stdout.write(
-            self.style.SUCCESS(f"demo user '{username}' ready (created={created})")
-        )
+        self.stdout.write(self.style.SUCCESS(f"demo user '{username}' ready (created={created})"))

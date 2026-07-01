@@ -15,7 +15,10 @@ extend-exclude = ["**/migrations/*"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "DJ"]
-ignore = ["E501"]  # black owns line length
+# E501: black owns line length.
+# DJ001: our models mirror a DDL with nullable TEXT/CHAR columns 1:1 (data_model_decisions),
+#        so null=True on string fields is intentional schema fidelity, not an oversight.
+ignore = ["E501", "DJ001"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/settings/*" = ["F403", "F405"]  # star-imports in settings are intentional

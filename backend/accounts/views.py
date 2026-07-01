@@ -49,9 +49,7 @@ class LoginView(APIView):
             password=serializer.validated_data["password"],
         )
         if user is None:
-            return Response(
-                {"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED
-            )
+            return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
         dj_login(request, user)
         return Response(UserSerializer(user).data)
 
@@ -71,3 +69,26 @@ class MeView(APIView):
     @extend_schema(responses={200: UserSerializer})
     def get(self, request):
         return Response(UserSerializer(request.user).data)
+
+
+class PreferencesView(APIView):
+    """The user half of the shared context store (features §E #22): the UI reads/writes
+    the same `app_user.preferences` JSON the agent tools see. PATCH shallow-merges."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: dict})
+    def get(self, request):
+        return Response(request.user.preferences or {})
+
+    @extend_schema(request=dict, responses={200: dict})
+    def patch(self, request):
+        prefs = dict(request.user.preferences or {})
+        if not isinstance(request.data, dict):
+            return Response(
+                {"detail": "expected a JSON object"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        prefs.update(request.data)
+        request.user.preferences = prefs
+        request.user.save(update_fields=["preferences", "updated_at"])
+        return Response(prefs)
