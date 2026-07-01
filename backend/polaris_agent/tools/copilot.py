@@ -13,6 +13,7 @@ will ask about.
 
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -144,13 +145,21 @@ def copilot_tools(principal_id: int) -> list:
         return await dal.write_memory(principal_id, content, namespace)
 
     @tool
-    async def launch_outreach(listing_id: int) -> dict:
-        """Rank buyers and reach out on a listing. (Ships in Phase 2 — not yet active.)"""
-        return {
-            "status": "not_available",
-            "detail": "Buyer ranking + outreach launches in Phase 2. For now I can value, "
-            "compare, and set the mandate to prepare this listing.",
-        }
+    async def launch_outreach(
+        listing_id: int, limit: int = 10, config: RunnableConfig = None
+    ) -> dict:
+        """Rank the buyers most likely to close on one of your listings and prepare an
+        outreach batch for your approval. Persists a draft campaign (ranked shortlist +
+        drafted openers) — NOTHING is sent until you approve it in the Outreach panel.
+        Returns the ranked shortlist with a 'why this buyer' reason for each. Narrate the
+        top few and tell the user to approve when ready; already-contacted buyers are
+        marked skipped."""
+        conv_id = None
+        if config:
+            conv_id = (config.get("configurable") or {}).get("conversation_id")
+        return await dal.launch_outreach(
+            principal_id, listing_id, conversation_id=conv_id, limit=limit
+        )
 
     return [
         extract_listing_details,

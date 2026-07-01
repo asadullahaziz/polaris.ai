@@ -40,6 +40,15 @@ class OutreachCampaign(models.Model):
     seller = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="outreach_campaigns"
     )
+    # The copilot chat this launch was fired from — where progress ticks + the final
+    # summary are posted back over the WS (P2.4/P2.5). NULL if launched outside a chat.
+    copilot_conversation = models.ForeignKey(
+        "conversations.Conversation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="outreach_campaigns",
+    )
     status = models.TextField(default="awaiting_approval", choices=CAMPAIGN_STATUSES)
     created_at = models.DateTimeField(auto_now_add=True)
 

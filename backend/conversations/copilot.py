@@ -17,6 +17,7 @@ WS envelope (implementation_plan §4.2): {type, conversation_id?, data}.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -37,14 +38,44 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             await self.close(code=4401)  # unauthenticated
             return
         self.user = user
+        self.group_name = f"copilot_{user.id}"
+        self._group_joined = False
         checkpointer = await get_checkpointer()
         name = await dal.display_name(user.id)
         self.agent = build_copilot_agent(checkpointer, principal_id=user.id, display_name=name)
         await self.accept()
         await self._send("copilot.ready", {"user": user.get_username()})
+        # Join the per-user group so the Inngest outreach fan-out (P2.4) can push progress
+        # ticks + the final summary into this chat. Do it AFTER accept and make it
+        # NON-FATAL + bounded: a channel-layer/Redis hiccup must never take down the chat
+        # (the group only carries secondary P2 outreach pushes).
+        try:
+            await asyncio.wait_for(
+                self.channel_layer.group_add(self.group_name, self.channel_name), timeout=3
+            )
+            self._group_joined = True
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully, keep the chat alive
+            log.warning("copilot group_add failed; live outreach ticks off this session: %s", exc)
+
+    async def disconnect(self, code):
+        if getattr(self, "_group_joined", False):
+            try:
+                await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
 
     async def _send(self, type_: str, data: dict) -> None:
         await self.send(text_data=json.dumps({"type": type_, "data": data}))
+
+    # ---- Channel-layer handlers: Inngest outreach fan-out → this socket ----------
+    async def outreach_progress(self, event):
+        """Templated 'Sent 3/10' tick from the fan-out (no LLM). group_send type
+        'outreach.progress' → this method."""
+        await self._send("outreach.progress", event.get("data", {}))
+
+    async def outreach_summary(self, event):
+        """Final NL summary (one copilot turn) persisted + pushed by the fan-out."""
+        await self._send("outreach.summary", event.get("data", {}))
 
     async def receive(self, text_data=None, bytes_data=None):
         try:
@@ -79,7 +110,14 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         buf: list[str] = []
         async for chunk, _meta in self.agent.astream(
             {"messages": history},
-            config={"configurable": {"thread_id": f"copilot:{conv_id}:{len(history)}"}},
+            config={
+                "configurable": {
+                    "thread_id": f"copilot:{conv_id}:{len(history)}",
+                    # Threaded to tools (launch_outreach) so a persisted campaign knows
+                    # which chat to post progress/summary back into (P2.4).
+                    "conversation_id": conv_id,
+                }
+            },
             stream_mode="messages",
         ):
             # Stream only the assistant's natural-language tokens. `messages` mode also

@@ -7,16 +7,20 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   addMemory,
+  approveCampaign,
+  cancelCampaign,
   createConversation,
   deleteConversation,
   fetchMe,
   getPreferences,
   getValuation,
+  listCampaigns,
   listConversations,
   listListings,
   listMemory,
   loadMessages,
   logout,
+  type OutreachCampaign,
   renameConversation,
   type Message,
   type Valuation,
@@ -43,47 +47,88 @@ export default function CopilotPage() {
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
-  const [rightTab, setRightTab] = useState<"listings" | "context">("listings");
+  const [rightTab, setRightTab] = useState<"listings" | "outreach" | "context">("listings");
+  const [tick, setTick] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
   const bufRef = useRef("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // The WS handler closes over the first render — keep the active chat in a ref so
+  // outreach ticks (which arrive async) route to the right conversation.
+  const activeIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   // One socket per session (cookie auth rides along, like the spike socket).
+  // Auto-reconnects on drop: in dev `uvicorn --reload` closes the socket on every backend
+  // edit, and any network blip can drop it — without reconnect the chat looks broken (send
+  // silently no-ops) until a manual page reload.
   useEffect(() => {
     if (!me) return;
-    const ws = new WebSocket(`${WS_BASE}/ws/copilot/`);
-    wsRef.current = ws;
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      const d = msg.data || {};
-      if (msg.type === "copilot.created") setActiveId(d.conversation_id);
-      else if (msg.type === "copilot.token") {
-        bufRef.current += d.token;
-        setStreaming(bufRef.current);
-      } else if (msg.type === "copilot.done") {
-        const body = bufRef.current;
-        bufRef.current = "";
-        setStreaming("");
-        setBusy(false);
-        setMessages((m) => [
-          ...m,
-          { id: d.message_id, author_type: "agent", body, created_at: "" },
-        ]);
-        qc.invalidateQueries({ queryKey: ["conversations"] });
-      } else if (msg.type === "copilot.error") {
-        bufRef.current = "";
-        setStreaming("");
-        setBusy(false);
-        setMessages((m) => [
-          ...m,
-          { id: -Date.now(), author_type: "system", body: `⚠️ ${d.detail}`, created_at: "" },
-        ]);
-      }
+    let stopped = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+
+    function connect() {
+      const ws = new WebSocket(`${WS_BASE}/ws/copilot/`);
+      wsRef.current = ws;
+      ws.onopen = () => setConnected(true);
+      ws.onclose = () => {
+        setConnected(false);
+        setBusy(false); // a turn in flight is lost on drop — let the user retry
+        if (!stopped) retry = setTimeout(connect, 1500); // reconnect with a short backoff
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        const d = msg.data || {};
+        if (msg.type === "copilot.created") setActiveId(d.conversation_id);
+        else if (msg.type === "copilot.token") {
+          bufRef.current += d.token;
+          setStreaming(bufRef.current);
+        } else if (msg.type === "copilot.done") {
+          const body = bufRef.current;
+          bufRef.current = "";
+          setStreaming("");
+          setBusy(false);
+          setMessages((m) => [
+            ...m,
+            { id: d.message_id, author_type: "agent", body, created_at: "" },
+          ]);
+          qc.invalidateQueries({ queryKey: ["conversations"] });
+        } else if (msg.type === "copilot.error") {
+          bufRef.current = "";
+          setStreaming("");
+          setBusy(false);
+          setMessages((m) => [
+            ...m,
+            { id: -Date.now(), author_type: "system", body: `⚠️ ${d.detail}`, created_at: "" },
+          ]);
+        } else if (msg.type === "outreach.progress") {
+          // Templated fan-out tick (no LLM) — transient status in the launching chat.
+          if (d.conversation_id == null || d.conversation_id === activeIdRef.current) {
+            setTick(d.text || "");
+            if (d.done) setTimeout(() => setTick(""), 4000);
+          }
+        } else if (msg.type === "outreach.summary") {
+          setTick("");
+          qc.invalidateQueries({ queryKey: ["campaigns"] });
+          qc.invalidateQueries({ queryKey: ["conversations"] });
+          if (d.body && (d.conversation_id == null || d.conversation_id === activeIdRef.current)) {
+            setMessages((m) => [
+              ...m,
+              { id: d.message_id ?? -Date.now(), author_type: "agent", body: d.body, created_at: "" },
+            ]);
+          }
+        }
+      };
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      if (retry) clearTimeout(retry);
+      wsRef.current?.close();
     };
-    return () => ws.close();
   }, [me, qc]);
 
   useEffect(() => {
@@ -204,6 +249,11 @@ export default function CopilotPage() {
             ))}
             {streaming && <Bubble role="agent" body={streaming} streaming />}
             {busy && !streaming && <p className="my-3 text-gray-400">Polaris is thinking…</p>}
+            {tick && (
+              <p className="my-3 text-center text-xs text-blue-600 dark:text-blue-400">
+                📣 {tick}
+              </p>
+            )}
           </div>
         </div>
         <div className="border-t border-gray-200 p-4 dark:border-gray-800">
@@ -273,14 +323,14 @@ function RightRail({
   setTab,
   enabled,
 }: {
-  tab: "listings" | "context";
-  setTab: (t: "listings" | "context") => void;
+  tab: "listings" | "outreach" | "context";
+  setTab: (t: "listings" | "outreach" | "context") => void;
   enabled: boolean;
 }) {
   return (
     <aside className="hidden w-80 flex-col border-l border-gray-200 lg:flex dark:border-gray-800">
       <div className="flex border-b border-gray-200 dark:border-gray-800">
-        {(["listings", "context"] as const).map((t) => (
+        {(["listings", "outreach", "context"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -294,9 +344,101 @@ function RightRail({
       </div>
       <div className="flex-1 overflow-y-auto p-3">
         {enabled && tab === "listings" && <ListingsPanel />}
+        {enabled && tab === "outreach" && <OutreachPanel />}
         {enabled && tab === "context" && <ContextPanel />}
       </div>
     </aside>
+  );
+}
+
+function OutreachPanel() {
+  const qc = useQueryClient();
+  const { data: campaigns = [] } = useQuery({
+    queryKey: ["campaigns"],
+    queryFn: listCampaigns,
+    refetchInterval: 5000, // reflect status changes as the fan-out runs
+  });
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  async function act(id: number, fn: (id: number) => Promise<unknown>) {
+    setBusyId(id);
+    try {
+      await fn(id);
+      await qc.invalidateQueries({ queryKey: ["campaigns"] });
+      await qc.invalidateQueries({ queryKey: ["conversations"] });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const badge: Record<string, string> = {
+    awaiting_approval: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
+    sending: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+    done: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+    cancelled: "bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-500">
+        Ask Polaris in chat to “reach out to the best buyers for listing #N”. Ranked batches land
+        here for your approval — nothing sends until you approve.
+      </p>
+      {campaigns.length === 0 && <p className="text-gray-500">No outreach yet.</p>}
+      {campaigns.map((c: OutreachCampaign) => {
+        const pending = c.recipients.filter((r) => r.status === "pending").length;
+        return (
+          <div key={c.id} className="rounded border border-gray-200 p-2 dark:border-gray-800">
+            <div className="flex items-center justify-between">
+              <div className="truncate font-medium">
+                {c.listing_address || `Listing #${c.listing}`}
+              </div>
+              <span className={`ml-2 shrink-0 rounded px-1.5 py-0.5 text-[10px] ${badge[c.status] || ""}`}>
+                {c.status.replace(/_/g, " ")}
+              </span>
+            </div>
+            <ul className="mt-2 space-y-1">
+              {c.recipients.map((r) => (
+                <li key={r.id} className="rounded bg-gray-100 px-2 py-1 text-xs dark:bg-gray-800">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">
+                      {r.name}{" "}
+                      <span className="text-gray-400">
+                        {r.kind === "prospect" ? "(prospect)" : ""}
+                      </span>
+                    </span>
+                    <span className="text-gray-400">
+                      {r.rank_score != null ? Number(r.rank_score).toFixed(2) : ""}
+                      {r.status !== "pending" && r.status !== "sent" ? " · skipped" : ""}
+                      {r.status === "sent" ? " · sent ✓" : ""}
+                    </span>
+                  </div>
+                  {r.rank_reason && <div className="text-gray-500">{r.rank_reason}</div>}
+                </li>
+              ))}
+            </ul>
+            {c.status === "awaiting_approval" && (
+              <div className="mt-2 flex gap-2">
+                <button
+                  disabled={busyId === c.id || pending === 0}
+                  onClick={() => act(c.id, approveCampaign)}
+                  className="flex-1 rounded bg-black px-2 py-1 text-xs text-white disabled:opacity-40 dark:bg-white dark:text-black"
+                >
+                  Approve &amp; send {pending}
+                </button>
+                <button
+                  disabled={busyId === c.id}
+                  onClick={() => act(c.id, cancelCampaign)}
+                  className="rounded border border-gray-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-gray-700"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
