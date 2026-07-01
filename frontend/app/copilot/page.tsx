@@ -61,56 +61,74 @@ export default function CopilotPage() {
   }, [activeId]);
 
   // One socket per session (cookie auth rides along, like the spike socket).
+  // Auto-reconnects on drop: in dev `uvicorn --reload` closes the socket on every backend
+  // edit, and any network blip can drop it — without reconnect the chat looks broken (send
+  // silently no-ops) until a manual page reload.
   useEffect(() => {
     if (!me) return;
-    const ws = new WebSocket(`${WS_BASE}/ws/copilot/`);
-    wsRef.current = ws;
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      const d = msg.data || {};
-      if (msg.type === "copilot.created") setActiveId(d.conversation_id);
-      else if (msg.type === "copilot.token") {
-        bufRef.current += d.token;
-        setStreaming(bufRef.current);
-      } else if (msg.type === "copilot.done") {
-        const body = bufRef.current;
-        bufRef.current = "";
-        setStreaming("");
-        setBusy(false);
-        setMessages((m) => [
-          ...m,
-          { id: d.message_id, author_type: "agent", body, created_at: "" },
-        ]);
-        qc.invalidateQueries({ queryKey: ["conversations"] });
-      } else if (msg.type === "copilot.error") {
-        bufRef.current = "";
-        setStreaming("");
-        setBusy(false);
-        setMessages((m) => [
-          ...m,
-          { id: -Date.now(), author_type: "system", body: `⚠️ ${d.detail}`, created_at: "" },
-        ]);
-      } else if (msg.type === "outreach.progress") {
-        // Templated fan-out tick (no LLM) — transient status in the launching chat.
-        if (d.conversation_id == null || d.conversation_id === activeIdRef.current) {
-          setTick(d.text || "");
-          if (d.done) setTimeout(() => setTick(""), 4000);
-        }
-      } else if (msg.type === "outreach.summary") {
-        setTick("");
-        qc.invalidateQueries({ queryKey: ["campaigns"] });
-        qc.invalidateQueries({ queryKey: ["conversations"] });
-        if (d.body && (d.conversation_id == null || d.conversation_id === activeIdRef.current)) {
+    let stopped = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+
+    function connect() {
+      const ws = new WebSocket(`${WS_BASE}/ws/copilot/`);
+      wsRef.current = ws;
+      ws.onopen = () => setConnected(true);
+      ws.onclose = () => {
+        setConnected(false);
+        setBusy(false); // a turn in flight is lost on drop — let the user retry
+        if (!stopped) retry = setTimeout(connect, 1500); // reconnect with a short backoff
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        const d = msg.data || {};
+        if (msg.type === "copilot.created") setActiveId(d.conversation_id);
+        else if (msg.type === "copilot.token") {
+          bufRef.current += d.token;
+          setStreaming(bufRef.current);
+        } else if (msg.type === "copilot.done") {
+          const body = bufRef.current;
+          bufRef.current = "";
+          setStreaming("");
+          setBusy(false);
           setMessages((m) => [
             ...m,
-            { id: d.message_id ?? -Date.now(), author_type: "agent", body: d.body, created_at: "" },
+            { id: d.message_id, author_type: "agent", body, created_at: "" },
           ]);
+          qc.invalidateQueries({ queryKey: ["conversations"] });
+        } else if (msg.type === "copilot.error") {
+          bufRef.current = "";
+          setStreaming("");
+          setBusy(false);
+          setMessages((m) => [
+            ...m,
+            { id: -Date.now(), author_type: "system", body: `⚠️ ${d.detail}`, created_at: "" },
+          ]);
+        } else if (msg.type === "outreach.progress") {
+          // Templated fan-out tick (no LLM) — transient status in the launching chat.
+          if (d.conversation_id == null || d.conversation_id === activeIdRef.current) {
+            setTick(d.text || "");
+            if (d.done) setTimeout(() => setTick(""), 4000);
+          }
+        } else if (msg.type === "outreach.summary") {
+          setTick("");
+          qc.invalidateQueries({ queryKey: ["campaigns"] });
+          qc.invalidateQueries({ queryKey: ["conversations"] });
+          if (d.body && (d.conversation_id == null || d.conversation_id === activeIdRef.current)) {
+            setMessages((m) => [
+              ...m,
+              { id: d.message_id ?? -Date.now(), author_type: "agent", body: d.body, created_at: "" },
+            ]);
+          }
         }
-      }
+      };
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      if (retry) clearTimeout(retry);
+      wsRef.current?.close();
     };
-    return () => ws.close();
   }, [me, qc]);
 
   useEffect(() => {

@@ -14,6 +14,9 @@ django-cors-headers==4.*          # SPA cross-origin credentialed requests
 # ---- Realtime (Channels) ----
 channels==4.*
 channels-redis==4.*
+redis==5.2.*                       # PIN: channels-redis 4.3's blocking bzpopmin races a
+                                   # socket read-timeout on redis-py 8 → idle WS sockets drop
+                                   # (~45s). 5.x is the version channels-redis 4.3 targets.
 
 # ---- ASGI server (emits lifespan events -> checkpointer pool startup) ----
 uvicorn[standard]==0.34.*
