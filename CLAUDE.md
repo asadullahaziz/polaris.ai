@@ -22,8 +22,8 @@ In-App Communication, and Polaris AI (agent mode vs. copilot mode).
 
 ## Current status
 
-**Implementation underway — Phase 0 scaffolding is in.** The design phase is closed
-(product definition, PRD, feature/flow spec, agent architecture, full data model/schema,
+**Implementation underway — Phases 0–3 built (all three LangGraph graphs).** The design phase
+is closed (product definition, PRD, feature/flow spec, agent architecture, full data model/schema,
 and the system-design review remediation, all under `.claude/`). Execution follows the
 phased plan in [`.claude/plans/implementation_plan.md`](./.claude/plans/implementation_plan.md).
 
@@ -69,13 +69,47 @@ phased plan in [`.claude/plans/implementation_plan.md`](./.claude/plans/implemen
 - **Frontend** — an Outreach right-rail tab (ranked shortlist w/ reasons, approve/cancel) + live
   `outreach.progress`/`outreach.summary` handling in the chat.
 
-Backend suite green (`make test`, 21 passed): schema, engine (comps + `rank_buyers`), seed
-idempotency/rebase, copilot plumbing, **outreach ranking determinism + ledger + fan-out
-idempotency + launch→approve→send slice**, and the P0 spike. **⛔ Gate to P3:** the outreach slice
-demoed in the browser (mandatory human checkpoint — plan P2); the live Inngest fan-out + copilot
-narration are that browser gate (LLM-free invariants are unit-tested). **Deferred to P3:** the
-buyer-facing thread/inbox UI (coupled to presence + the auto-responder). **Resume:** demo P2, then
-P3 (auto-responder, buyer role first).
+**Phase 3 (Auto-responder · Graph 2 — buyer role first, seller role configurable)** is built:
+- **`assess_deal`** (`matching/engine.py`) — deterministic wholesale math over the same comp engine:
+  `spread = ARV − asking − est_rehab − wholesale_fee`, margin vs a strategy threshold →
+  `qualify/hold/decline` + rationale. Missing inputs → **hold and ask**, never a blind decline. No LLM.
+- **Two-stage airlock** (`polaris_agent/graphs/responder.py`) — a `StateGraph`: screen (Haiku
+  injection check) → assess (engine) → **Stage 1 decide** (PRIVATE ctx → CLOSED `AgentDecision`, no
+  floor/ceiling slot) → deterministic **policy gate** → **Stage 2 draft** (PUBLIC-only ctx, mandate
+  NOT in scope) → deterministic **output check** (literal-leak scan) → send gate. Stage 2 can't voice
+  a limit it never held — the airlock is structural. Engine tools called deterministically (collapsed
+  like Graph 3), `role=buyer_agent|seller_agent` swaps a prompt fragment + mandate orientation.
+- **The invariant** (`conversations/responder_service.py`, pure-sync) — the "exactly one reply"
+  guarantee: `commit_reply` takes `pg_advisory_xact_lock`, re-checks presence + the reply cap
+  (own-side agent replies since the last **same-side** human `< N=1`), and inserts under
+  `dedup_key` + `ON CONFLICT DO NOTHING`. Human takeover needs no special code (same-side human
+  resets the cap). `persist_draft`/`approve_draft` = the `assist`/`confirm` send gate (draft + notify,
+  approve = takeover); `escalate` = status + notification, **no** counterparty message.
+- **Presence** (`conversations/presence.py`) — Redis `presence:{conv}:{user}` w/ TTL; fail-safe = absent.
+- **Inngest** (`conversations/functions.py`) — `thread/inbound`-triggered `thread_inbound`:
+  `step.wait_for_event("thread/focused", if_exp=…, timeout=grace)` debounce (45s, env-overridable),
+  early presence + cap re-check (2nd inbound while absent → **escalate**), then one Graph 2 turn;
+  broadcasts the reply to the thread group. Outreach fan-out emits `thread/inbound` for registered
+  buyers (prospects have no agent). Durability = Inngest retries + `message` idempotency (not the checkpoint).
+- **ThreadConsumer** (`ws/thread/<id>/`) — presence (focus/blur/typing → `thread/focused` + broadcast),
+  `message.send` (persist + broadcast `message.new` + emit `thread/inbound` for the counterparty),
+  agent-reply handback over the `thread_{id}` group.
+- **REST** — `/api/threads/` (inbox list/detail/messages, thread-scoped `mandate` GET/PUT for the
+  auto-reply/autonomy toggle, `approve-draft`), `/api/notifications/` (feed + read).
+- **Frontend** — an Inbox + thread view: live socket, counterparty presence, agent-vs-human
+  authorship badges + action chips, auto-reply/autonomy toggle, draft approval, a notifications bell.
+
+Backend suite green (`make test`, 37 passed): P0 spike, schema, engine (comps + `rank_buyers` +
+`assess_deal`), seed idempotency/rebase, copilot plumbing, outreach (ledger + fan-out idempotency +
+slice), and **P3 — the commit-gate invariant (one reply; takeover stands down; 2nd inbound escalates;
+cap resets only on same-side human), the disclosure gates (policy + literal-leak output check),
+assess_deal divergence, draft/approve, and responder routing** — all LLM-free. The live two-stage
+airlock was smoke-verified end-to-end against seeded data + OpenRouter: a `qualify` reply whose body
+never leaks the ceiling, and a prompt-injection inbound that escalates without replying. **⛔ Gate to
+seller role / stretch:** the P3 slice demoed in the browser (mandatory human checkpoint — plan P3):
+seller launches outreach → offline buyers' agents auto-reply (qualify/hold/decline divergence) → seller
+watches replies land; opening a thread + typing = takeover. **Resume:** demo P3 buyer role, sign off,
+then flip `role="seller"`; the agent↔agent multi-round loop remains **stretch** (do not build).
 
 Key design docs (keep these authoritative — update them when a decision changes):
 - [`.claude/context/PRODUCT.md`](./.claude/context/PRODUCT.md) — product definition (what/why)
@@ -154,10 +188,15 @@ docker-compose.yml       6 services, one .env; `docker compose up` = the whole s
 - **The P1 copilot demo:** open http://localhost:3000/copilot and log in. Use a **seed seller**
   (`kc_seller_1` / `polaris123`) to see the 15 seeded listings and value them, or `demo` for a
   fresh intake. Seed buyers are `kc_buyer_1..15` (same password); they have buy-boxes + history.
-- **Seed the demo data:** `make seed` (idempotent) · `make seed-reset` (rebuild w/ fresh dates).
+- **The P3 auto-responder demo:** as `kc_seller_1`, ask the copilot to "reach out to the best buyers
+  for listing #N" and approve. The offline buyers' agents auto-reply after the grace window — open
+  http://localhost:3000/inbox to watch the qualify/hold/decline replies land per thread. Opening a
+  thread + typing is the human takeover (presence silences that side's agent). Shorten the wait for a
+  live demo with `RESPONDER_GRACE_SECONDS` (default 45). Inngest dev UI on :8288 shows `thread-inbound`.
 - **Fresh-clone reset:** `make down-v` (drops volumes) then `make up`.
 - **Run the test suite (the gate):** `make test` — `makemigrations && pytest` in the backend
-  container (schema, matching engine, seed idempotency/rebase, copilot plumbing, P0 spike).
+  container (schema, matching engine incl. `assess_deal`, seed idempotency/rebase, copilot plumbing,
+  outreach ledger/fan-out, the P3 commit-gate invariant + disclosure gates, P0 spike). 37 passing.
 - **Migrations / shell / psql / format:** `make migrate` · `make shell` · `make psql` · `make fmt`.
 - **Regenerate the typed FE client** (backend must be up): `cd frontend && npm run gen:api`.
 

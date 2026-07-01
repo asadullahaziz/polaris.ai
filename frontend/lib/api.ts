@@ -217,3 +217,77 @@ export const cancelCampaign = (id: number) =>
   apiFetch(`/api/outreach/campaigns/${id}/cancel/`, { method: "POST", body: "{}" }).then((r) =>
     json<Record<string, unknown>>(r),
   );
+
+// ---- Shared threads + auto-responder (P3) -----------------------------------
+export type ThreadListItem = {
+  id: number;
+  listing_id: number | null;
+  listing_address: string | null;
+  my_side: "buyer" | "seller";
+  counterparty_name: string;
+  counterparty_kind: string;
+  status: string;
+  terminal: string | null;
+  updated_at: string;
+  last_message: {
+    body: string;
+    author_type: string;
+    author_side: string | null;
+    created_at: string;
+  } | null;
+};
+
+export type ThreadMessage = {
+  id: number;
+  author_type: "human" | "agent" | "system";
+  author_side: "buyer" | "seller" | null;
+  action: string | null;
+  body: string;
+  status: "sent" | "draft";
+  created_at: string;
+};
+
+export type ThreadMandate = {
+  side?: "buyer" | "seller";
+  has_mandate?: boolean;
+  auto_reply?: boolean | null;
+  autonomy?: string | null;
+  instructions?: string | null;
+  error?: string;
+};
+
+export type Notification = {
+  id: number;
+  type: string;
+  conversation: number | null;
+  payload: Record<string, unknown>;
+  read_at: string | null;
+  created_at: string;
+};
+
+export const listThreads = () =>
+  apiFetch("/api/threads/").then((r) => json<ThreadListItem[]>(r));
+
+export const getThreadMessages = (id: number) =>
+  apiFetch(`/api/threads/${id}/messages/`).then((r) => json<ThreadMessage[]>(r));
+
+export const getThreadMandate = (id: number) =>
+  apiFetch(`/api/threads/${id}/mandate/`).then((r) => json<ThreadMandate>(r));
+
+export const setThreadMandate = (id: number, body: Partial<ThreadMandate>) =>
+  apiFetch(`/api/threads/${id}/mandate/`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  }).then((r) => json<ThreadMandate>(r));
+
+export const approveThreadDraft = (id: number, message_id: number) =>
+  apiFetch(`/api/threads/${id}/approve-draft/`, {
+    method: "POST",
+    body: JSON.stringify({ message_id }),
+  }).then((r) => json<Record<string, unknown>>(r));
+
+export const listNotifications = () =>
+  apiFetch("/api/notifications/").then((r) => json<Notification[]>(r));
+
+export const readAllNotifications = () =>
+  apiFetch("/api/notifications/read-all/", { method: "POST", body: "{}" });

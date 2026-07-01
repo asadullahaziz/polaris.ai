@@ -13,6 +13,10 @@ Public API:
   * rank_buyers(listing_id, ...)  → the buyer-matching engine (P2.1, matching_and_data §2):
                                      behavioral-first weighted score + per-feature breakdown
                                      the LLM narrates as "why this buyer." No LLM here.
+  * assess_deal(listing_id, ...)  → the buyer auto-responder's wholesale math (P3.4,
+                                     matching_and_data §3): spread/margin vs the buyer's
+                                     strategy threshold → qualify/hold/decline verdict +
+                                     rationale, feeding Stage 1 (architecture §5). No LLM.
 
 `subject` is a `catalog.Property` or a dict of {geom, beds, sqft, grade, waterfront,
 condition, pk} — so it works on a saved listing OR freshly-extracted attributes.
@@ -316,7 +320,11 @@ def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> 
     lp = ListingProperty.objects.filter(listing_id=listing_id).select_related("property").first()
     prop = lp.property if lp else None
     if prop is None or prop.geom is None:
-        return {"listing_id": listing_id, "ranked": [], "note": "listing has no geolocated property"}
+        return {
+            "listing_id": listing_id,
+            "ranked": [],
+            "note": "listing has no geolocated property",
+        }
 
     geom = prop.geom
     price = (
@@ -397,7 +405,11 @@ def _candidate_pool(geom, radius_mi: float) -> tuple[set[int], set[int]]:
         .annotate(d=Distance("center", geom))
         .select_related("buy_box")
     ):
-        if g.radius_mi is not None and g.d is not None and g.d.m <= float(g.radius_mi) * _METERS_PER_MILE:
+        if (
+            g.radius_mi is not None
+            and g.d is not None
+            and g.d.m <= float(g.radius_mi) * _METERS_PER_MILE
+        ):
             user_ids.add(g.buy_box.buyer_id)
     return user_ids, prospect_ids
 
@@ -411,9 +423,19 @@ def _load_purchases(user_ids, prospect_ids, geom, radius_mi):
     per_prospect: dict[int, list[dict]] = defaultdict(list)
     threshold_m = float(radius_mi) * _METERS_PER_MILE
     qs = (
-        Purchase.objects.filter(Q(buyer_user_id__in=user_ids) | Q(buyer_prospect_id__in=prospect_ids))
+        Purchase.objects.filter(
+            Q(buyer_user_id__in=user_ids) | Q(buyer_prospect_id__in=prospect_ids)
+        )
         .annotate(dist=Distance("geom", geom))
-        .values("buyer_user_id", "buyer_prospect_id", "price", "purchased_at", "cash_buyer", "disposition", "dist")
+        .values(
+            "buyer_user_id",
+            "buyer_prospect_id",
+            "price",
+            "purchased_at",
+            "cash_buyer",
+            "disposition",
+            "dist",
+        )
     )
     for r in qs:
         dist_m = r["dist"].m if r["dist"] is not None else None
@@ -445,7 +467,9 @@ def _relationships(seller_id, user_ids, prospect_ids):
 
     base = Conversation.objects.filter(kind="thread", listing__seller_id=seller_id)
     rel_users = set(
-        base.filter(counterparty_user_id__in=user_ids).values_list("counterparty_user_id", flat=True)
+        base.filter(counterparty_user_id__in=user_ids).values_list(
+            "counterparty_user_id", flat=True
+        )
     )
     rel_prospects = set(
         base.filter(counterparty_prospect_id__in=prospect_ids).values_list(
@@ -473,7 +497,18 @@ def _load_names(user_ids, prospect_ids):
 
 
 def _score_candidate(
-    *, key, name, registered, purchases, box, related, prop, price, today, radius_mi, prospect_cash=None
+    *,
+    key,
+    name,
+    registered,
+    purchases,
+    box,
+    related,
+    prop,
+    price,
+    today,
+    radius_mi,
+    prospect_cash=None,
 ) -> dict:
     n_total = len(purchases)
     n_near = sum(1 for p in purchases if p["near"])
@@ -530,4 +565,122 @@ def _score_candidate(
         "n_purchases": n_total,
         "n_nearby": n_near,
         "cash": is_cash,
+    }
+
+
+# =====================================================================================
+# Deal assessment (P3.4, matching_and_data §3) — the buyer auto-responder's
+# qualify / hold / decline verdict. Deterministic wholesale math over the same comp
+# engine `estimate_value` uses, so Stage 1's decision is grounded, not vibes
+# (architecture §5). No LLM: the model narrates this verdict, it never computes it.
+# =====================================================================================
+
+# Rehab $/sqft by KC condition (1=full gut … 5=turnkey): a value-add deal costs more
+# to bring to ARV-ready. Grounds est_rehab in the subject's real condition.
+_REHAB_PSF_BY_CONDITION = {1: 60, 2: 45, 3: 25, 4: 10, 5: 0}
+_DEFAULT_REHAB_PSF = 30  # unknown condition → a mid estimate
+
+WHOLESALE_FEE = 10_000  # the assignment fee a wholesaler expects to clear on top
+
+# Minimum spread margin (spread / ARV) each strategy needs before a deal "bites".
+_MARGIN_THRESHOLD_BY_STRATEGY = {
+    "fix_flip": 0.20,
+    "brrrr": 0.15,
+    "buy_hold": 0.10,
+    "wholesale": 0.12,
+}
+_DEFAULT_MARGIN_THRESHOLD = 0.15
+_HOLD_BAND = 0.05  # within this of the threshold → borderline → hold (don't decline)
+
+
+def _est_rehab(condition, sqft) -> int | None:
+    if not sqft:
+        return None
+    psf = _REHAB_PSF_BY_CONDITION.get(condition, _DEFAULT_REHAB_PSF)
+    return int(psf * sqft)
+
+
+def assess_deal(listing_id: int, *, strategy: str | None = None, min_n: int = 5) -> dict:
+    """Wholesale spread vs the buyer's strategy threshold → qualify / hold / decline.
+
+    `strategy` (the buyer's dominant strategy) picks the margin threshold; the caller
+    derives it from the buyer's buy-box / purchase history. Missing inputs (no ARV,
+    thin comps, no asking) → **hold and ask**, never a blind decline.
+    """
+    from catalog.models import Listing, ListingProperty
+
+    listing = Listing.objects.filter(id=listing_id).first()
+    if listing is None:
+        return {"verdict": "hold", "error": f"listing {listing_id} not found"}
+    lp = ListingProperty.objects.filter(listing_id=listing_id).select_related("property").first()
+    prop = lp.property if lp else None
+    if prop is None:
+        return {"verdict": "hold", "error": "listing has no property"}
+
+    asking = (
+        float(listing.asking_price)
+        if listing.asking_price is not None
+        else (float(lp.asking_price) if lp.asking_price is not None else None)
+    )
+    arv_res = estimate_value(prop, arv=True, min_n=min_n)
+    arv = arv_res["point"]
+    threshold = _MARGIN_THRESHOLD_BY_STRATEGY.get(strategy, _DEFAULT_MARGIN_THRESHOLD)
+    est_rehab = _est_rehab(prop.condition, prop.sqft)
+
+    base = {
+        "arv": arv,
+        "asking": asking,
+        "est_rehab": est_rehab,
+        "wholesale_fee": WHOLESALE_FEE,
+        "strategy": strategy,
+        "threshold": threshold,
+        "basis": arv_res["basis"],
+    }
+
+    # Can't price the deal → hold and chase info, don't guess a decline.
+    if arv is None or asking is None or est_rehab is None or not arv_res["basis"]["met_min_n"]:
+        missing = []
+        if arv is None:
+            missing.append("no ARV")
+        if not arv_res["basis"]["met_min_n"]:
+            missing.append("thin comps")
+        if asking is None:
+            missing.append("no asking price")
+        if est_rehab is None:
+            missing.append("unknown size")
+        return {
+            **base,
+            "verdict": "hold",
+            "spread": None,
+            "margin_pct": None,
+            "rationale": (
+                "Can't fully price this yet ("
+                + ", ".join(missing)
+                + ") — need more listing detail before qualifying."
+            ),
+        }
+
+    spread = arv - asking - est_rehab - WHOLESALE_FEE
+    margin_pct = spread / arv if arv else 0.0
+    if margin_pct >= threshold:
+        verdict = "qualify"
+    elif margin_pct >= threshold - _HOLD_BAND:
+        verdict = "hold"
+    else:
+        verdict = "decline"
+
+    rationale = (
+        f"ARV ~${arv:,.0f}, asking ${asking:,.0f}, est. rehab ${est_rehab:,.0f} "
+        f"(condition {prop.condition if prop.condition is not None else '?'}), "
+        f"${WHOLESALE_FEE:,.0f} fee → spread ${spread:,.0f} ({margin_pct:.0%} margin) "
+        f"vs {threshold:.0%} target"
+        + (f" for {strategy.replace('_', ' ')}" if strategy else "")
+        + f": {verdict}."
+    )
+    return {
+        **base,
+        "verdict": verdict,
+        "spread": round(spread),
+        "margin_pct": round(margin_pct, 4),
+        "rationale": rationale,
     }
