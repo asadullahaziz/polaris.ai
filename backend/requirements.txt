@@ -1,0 +1,43 @@
+# Polaris AI — backend runtime dependencies.
+#
+# Pinned to current stable *families* (implementation_plan §5). Exact patch
+# versions are frozen from the generated lockfile once the image builds green
+# (P0): `pip freeze > requirements.lock`. Families verified via Context7 where
+# noted in the plan.
+
+# ---- Web / API ----
+Django==5.2.*                      # 5.2 LTS (6.0 still alpha — do not use)
+djangorestframework==3.16.*
+drf-spectacular==0.28.*            # OpenAPI schema -> typed FE client
+django-cors-headers==4.*          # SPA cross-origin credentialed requests
+
+# ---- Realtime (Channels) ----
+channels==4.*
+channels-redis==4.*
+
+# ---- ASGI server (emits lifespan events -> checkpointer pool startup) ----
+uvicorn[standard]==0.34.*
+
+# ---- Database drivers ----
+psycopg[binary,pool]==3.2.*        # binary build + AsyncConnectionPool
+
+# ---- Agent / LangGraph (pin EXACT from the lockfile; families only here) ----
+langgraph>=0.6
+langgraph-checkpoint-postgres>=2.0
+langchain-core>=0.3
+
+# ---- Provider clients (provider-agnostic; #5 deferred — both paths available) ----
+langchain-anthropic>=0.3
+langchain-openai>=0.3             # OpenRouter via base_url
+anthropic>=0.40
+
+# ---- Durable orchestration ----
+inngest>=0.4,<0.6                  # Python SDK 0.4/0.5 (Python >=3.10)
+
+# ---- Object storage (MinIO in compose; S3 API) ----
+django-storages[s3]==1.14.*
+boto3>=1.34
+
+# ---- Misc ----
+pydantic==2.*
+python-dotenv>=1.0

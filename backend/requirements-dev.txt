@@ -1,0 +1,9 @@
+# Dev/test-only dependencies (installed in the dev image stage).
+-r requirements.txt
+
+pytest>=8.0
+pytest-django>=4.8
+pytest-asyncio>=0.24        # async consumer/checkpointer tests
+daphne>=4.1                 # channels.testing imports it (WebsocketCommunicator); serve still uses uvicorn
+ruff>=0.6
+black>=24.0

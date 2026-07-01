@@ -1,0 +1,119 @@
+# Polaris AI — one-command bring-up (implementation_plan §1, the non-negotiable).
+# `docker compose up` -> all services healthy; fresh clone reproduces the demo.
+name: polaris
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-polaris}
+      POSTGRES_USER: ${POSTGRES_USER:-polaris}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polaris}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polaris} -d ${POSTGRES_DB:-polaris}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # One-shot: create the media bucket so uploads (P1+) have a home. Offline.
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-polaris-media}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD}; do echo 'waiting for minio'; sleep 1; done;
+      mc mb --ignore-existing local/$${S3_BUCKET};
+      mc anonymous set download local/$${S3_BUCKET} || true;
+      echo 'minio bucket ready';
+      "
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        INSTALL_DEV: "true"   # bake test/lint tools so `pytest` runs in-container
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app          # dev: live code; entrypoint regenerates migrations
+    command: ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--lifespan", "on", "--reload"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 45s   # first boot installs migrations + runs setup commands
+
+  # Inngest dev server — registers the app at /api/inngest and calls back to it.
+  inngest:
+    image: inngest/inngest:latest
+    command: ["inngest", "dev", "-u", "http://backend:8000/api/inngest"]
+    ports:
+      - "8288:8288"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    env_file: .env
+    environment:
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+      NEXT_PUBLIC_WS_BASE: ${NEXT_PUBLIC_WS_BASE:-ws://localhost:8000}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules       # keep container's installed deps
+    command: ["npm", "run", "dev"]
+
+volumes:
+  pgdata:
+  miniodata:

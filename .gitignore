@@ -2,3 +2,21 @@
 CLAUDE.local.md
 .DS_Store
 .env
+
+# ---- Python / Django (backend) ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+backend/staticfiles/
+*.sqlite3
+.venv/
+venv/
+
+# ---- Node / Next.js (frontend) ----
+node_modules/
+frontend/.next/
+frontend/out/
+*.tsbuildinfo
