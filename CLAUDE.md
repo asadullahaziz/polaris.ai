@@ -22,6 +22,8 @@ In-App Communication, and Polaris AI (agent mode vs. copilot mode).
 
 ## Current status
 
+> **⚠️ v2 REBUILD IN PROGRESS (2026-07-02).** The status below describes the built **v1** POC. A v2 full-web-app rebuild (in-place + port the import-isolated IP) is now the active direction — see [`.claude/plans/polaris_ai_v2_implementation_plan.md`](.claude/plans/polaris_ai_v2_implementation_plan.md). Locked v2 changes: prospects removed (registered users only), fused `conversation` table split into human `chat` + `ai` tables, free-form 1:1 chat, email-login custom user, ShadCN frontend. Treat the v1 details below as the port-from reference, not the v2 target, until this section is rewritten per-phase.
+
 **Implementation underway — Phases 0–3 built (all three LangGraph graphs).** The design phase
 is closed (product definition, PRD, feature/flow spec, agent architecture, full data model/schema,
 and the system-design review remediation, all under `.claude/`). Execution follows the
