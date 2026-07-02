@@ -70,6 +70,22 @@ async def outreach_fanout(ctx: inngest.Context) -> dict:
             res = {"status": "error"}
         if res.get("status") == "sent":
             sent += 1
+            # A registered buyer has an agent → arm the presence-gated auto-responder
+            # (Graph 2, P3): the opener is an inbound to their side. Prospects have no
+            # agent, so they're skipped. Best-effort; duplicate emits are idempotent.
+            if res.get("recipient_user_id") and res.get("opener_message_id"):
+                try:
+                    await inngest_client.send(
+                        inngest.Event(
+                            name="thread/inbound",
+                            data={
+                                "conversation_id": res["conversation_id"],
+                                "inbound_message_id": res["opener_message_id"],
+                            },
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - never break the fan-out on this
+                    log.warning("thread/inbound emit failed for recipient %s: %s", rid, exc)
         elif res.get("status") in ("skipped", "already_sent"):
             skipped += 1
 

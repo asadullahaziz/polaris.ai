@@ -223,7 +223,13 @@ export default function CopilotPage() {
         </div>
         <div className="border-t border-gray-200 p-3 text-xs text-gray-500 dark:border-gray-800">
           <div className="mb-1">{me.full_name || me.username}</div>
-          <button onClick={() => logout().then(() => router.push("/login"))} className="underline">
+          <Link href="/inbox" className="underline">
+            Inbox
+          </Link>
+          <button
+            onClick={() => logout().then(() => router.push("/login"))}
+            className="ml-2 underline"
+          >
             Log out
           </button>
           <span className={`ml-2 ${connected ? "text-green-600" : "text-gray-400"}`}>

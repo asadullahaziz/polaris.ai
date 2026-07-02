@@ -45,7 +45,9 @@ def build_opener(prop, asking_price, name: str, reason: str) -> str:
 
 
 @transaction.atomic
-def launch_outreach(seller_id: int, listing_id: int, *, conversation_id=None, limit: int = 10) -> dict:
+def launch_outreach(
+    seller_id: int, listing_id: int, *, conversation_id=None, limit: int = 10
+) -> dict:
     """Rank buyers, draft openers, and persist a draft campaign awaiting approval.
     Returns a compact shortlist for the copilot to narrate."""
     from agent_context.models import AgentActionLog
@@ -219,7 +221,7 @@ def send_recipient(recipient_id: int) -> dict:
         rec.save(update_fields=["status", "conversation"])
         return {"status": "skipped", "conversation_id": conv.id}
 
-    _insert_opener(conv, rec)
+    opener_id = _insert_opener(conv, rec)
     if rec.recipient_user_id:  # prospects are one-way (no platform user to notify)
         from notifications.models import Notification
 
@@ -229,7 +231,14 @@ def send_recipient(recipient_id: int) -> dict:
             conversation=conv,
             payload={"listing_id": rec.listing_id},
         )
-    return {"status": "sent", "conversation_id": conv.id}
+    return {
+        "status": "sent",
+        "conversation_id": conv.id,
+        # For the fan-out to trigger the buyer's auto-responder (Graph 2). Prospects have
+        # no agent, so recipient_user_id is the gate on emitting `thread/inbound`.
+        "recipient_user_id": rec.recipient_user_id,
+        "opener_message_id": opener_id,
+    }
 
 
 def _get_or_create_thread(rec):
@@ -258,11 +267,13 @@ def _opener_dedup_key(rec) -> str:
     return f"outreach:{rec.listing_id}:{tag}"
 
 
-def _insert_opener(conv, rec) -> None:
-    """Insert the opener message idempotently (dedup_key + ON CONFLICT DO NOTHING),
-    so a fan-out replay never double-posts."""
+def _insert_opener(conv, rec) -> int | None:
+    """Insert the opener message idempotently (dedup_key + ON CONFLICT DO NOTHING), so a
+    fan-out replay never double-posts. Returns the opener message id (for the auto-responder
+    trigger) — the existing row's id on a replay."""
     from conversations.models import Conversation, Message
 
+    key = _opener_dedup_key(rec)
     Message.objects.bulk_create(
         [
             Message(
@@ -274,12 +285,17 @@ def _insert_opener(conv, rec) -> None:
                 body=rec.draft_body or "",
                 status="sent",
                 sent_at=timezone.now(),
-                dedup_key=_opener_dedup_key(rec),
+                dedup_key=key,
             )
         ],
         ignore_conflicts=True,
     )
     Conversation.objects.filter(id=conv.id).update(updated_at=timezone.now())
+    return (
+        Message.objects.filter(conversation=conv, dedup_key=key)
+        .values_list("id", flat=True)
+        .first()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +320,9 @@ def campaign_dispatch_info(campaign_id: int) -> dict | None:
         "listing_id": c.listing_id,
         "listing_address": address,
         "recipient_ids": list(
-            c.recipients.filter(status="pending").order_by("-rank_score").values_list("id", flat=True)
+            c.recipients.filter(status="pending")
+            .order_by("-rank_score")
+            .values_list("id", flat=True)
         ),
     }
 

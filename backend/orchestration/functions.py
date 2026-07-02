@@ -14,6 +14,7 @@ import logging
 import inngest
 from channels.layers import get_channel_layer
 
+from conversations.functions import functions as conversations_functions
 from outreach.functions import functions as outreach_functions
 
 from .client import inngest_client
@@ -43,4 +44,4 @@ async def spike_ping(ctx: inngest.Context) -> dict:
 
 
 # Registered with inngest.django.serve(...) in config.urls.
-functions = [spike_ping, *outreach_functions]
+functions = [spike_ping, *outreach_functions, *conversations_functions]

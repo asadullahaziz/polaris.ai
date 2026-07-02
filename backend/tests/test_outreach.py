@@ -72,7 +72,9 @@ def _purchase(*, user=None, prospect=None, lon=LON, lat=LAT, price="400000", mon
 
 
 def _registered_buyer(username, *, cover=True, n_purchases=0):
-    u = get_user_model().objects.create_user(username=username, password="x", full_name=username.title())
+    u = get_user_model().objects.create_user(
+        username=username, password="x", full_name=username.title()
+    )
     box = BuyBox.objects.create(
         buyer=u,
         name=f"{username} box",
@@ -203,9 +205,7 @@ def test_ledger_never_double_sends_across_campaigns():
     assert service.send_recipient(r1.id)["status"] == "sent"
     assert service.send_recipient(r2.id)["status"] == "skipped"  # already contacted
 
-    sent = OutreachRecipient.objects.filter(
-        listing=listing, recipient_user=buyer, status="sent"
-    )
+    sent = OutreachRecipient.objects.filter(listing=listing, recipient_user=buyer, status="sent")
     assert sent.count() == 1  # the ledger guarantee
 
 
@@ -239,9 +239,7 @@ def test_send_recipient_is_idempotent_on_replay():
 
     assert first["status"] == "sent"
     assert second["status"] == "already_sent"
-    threads = Conversation.objects.filter(
-        kind="thread", listing=listing, counterparty_user=buyer
-    )
+    threads = Conversation.objects.filter(kind="thread", listing=listing, counterparty_user=buyer)
     assert threads.count() == 1  # one thread (uniqueness)
     openers = Message.objects.filter(
         conversation=threads.first(), dedup_key=f"outreach:{listing.id}:u{buyer.id}"
@@ -258,7 +256,9 @@ def test_prospect_send_opens_one_way_thread_without_notification():
     r = _recipient(c, listing, prospect=prospect)
 
     assert service.send_recipient(r.id)["status"] == "sent"
-    thread = Conversation.objects.get(kind="thread", listing=listing, counterparty_prospect=prospect)
+    thread = Conversation.objects.get(
+        kind="thread", listing=listing, counterparty_prospect=prospect
+    )
     assert Message.objects.filter(conversation=thread).count() == 1
 
 
@@ -276,9 +276,7 @@ def test_launch_skips_already_contacted_buyer():
     _recipient(prior, listing, user=buyer, status="sent")
 
     res = service.launch_outreach(seller.id, listing.id)
-    rec = OutreachRecipient.objects.get(
-        campaign_id=res["campaign_id"], recipient_user=buyer
-    )
+    rec = OutreachRecipient.objects.get(campaign_id=res["campaign_id"], recipient_user=buyer)
     assert rec.status == "skipped_already_contacted"
     assert res["skipped_count"] >= 1
 

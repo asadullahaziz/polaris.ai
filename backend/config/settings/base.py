@@ -256,6 +256,13 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
 INNGEST_APP_ID = env("INNGEST_APP_ID", "polaris")
 INNGEST_IS_PRODUCTION = env_bool("INNGEST_IS_PRODUCTION", False)
 
+# ---------------------------------------------------------------------------
+# Auto-responder (Graph 2) presence grace window (architecture §9a). The Inngest
+# handler waits this long for the human to show up before covering for them. Spec
+# is 45s; env-overridable so a live demo can shorten it.
+# ---------------------------------------------------------------------------
+RESPONDER_GRACE_SECONDS = int(env("RESPONDER_GRACE_SECONDS", "45") or 45)
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

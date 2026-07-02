@@ -18,6 +18,9 @@ export default function Home() {
         <Link href="/copilot" className="rounded border border-gray-400 px-4 py-2">
           Open copilot
         </Link>
+        <Link href="/inbox" className="rounded border border-gray-400 px-4 py-2">
+          Open inbox
+        </Link>
         <Link href="/spike" className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-500">
           P0 spike
         </Link>
