@@ -7,11 +7,13 @@ requires-python = ">=3.12"
 [tool.black]
 line-length = 100
 target-version = ["py312"]
+# _v1_reference/ is the frozen v1 port source — not v2 code, never reformat it.
+force-exclude = "_v1_reference/"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["**/migrations/*"]
+extend-exclude = ["**/migrations/*", "_v1_reference"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "DJ"]

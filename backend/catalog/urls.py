@@ -1,8 +1,7 @@
-from rest_framework.routers import DefaultRouter
+"""Catalog URL routes — mounted into config.urls in this app's phase."""
 
-from .views import ListingViewSet
+from __future__ import annotations
 
-router = DefaultRouter()
-router.register("listings", ListingViewSet, basename="listing")
+app_name = "catalog"
 
-urlpatterns = router.urls
+urlpatterns: list = []

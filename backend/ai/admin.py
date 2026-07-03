@@ -1,0 +1,3 @@
+"""Ai admin registrations — added in this app's phase."""
+
+from __future__ import annotations  # noqa: F401

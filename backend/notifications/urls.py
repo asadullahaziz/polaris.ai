@@ -1,8 +1,7 @@
-from rest_framework.routers import DefaultRouter
+"""Notifications URL routes — mounted into config.urls in this app's phase."""
 
-from .views import NotificationViewSet
+from __future__ import annotations
 
-router = DefaultRouter()
-router.register("notifications", NotificationViewSet, basename="notification")
+app_name = "notifications"
 
-urlpatterns = router.urls
+urlpatterns: list = []
