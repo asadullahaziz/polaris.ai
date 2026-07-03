@@ -1,7 +1,18 @@
-"""Ai URL routes — mounted into config.urls in this app's phase."""
+"""Ai URL routes — copilot chats + agent memory. Mounted at /api/ai/ by config.urls."""
 
 from __future__ import annotations
 
+from django.urls import path
+from rest_framework.routers import DefaultRouter
+
+from .views import AgentMemoryListView, AiChatViewSet
+
 app_name = "ai"
 
-urlpatterns: list = []
+router = DefaultRouter()
+router.register("chats", AiChatViewSet, basename="ai-chat")
+
+urlpatterns = [
+    path("memory/", AgentMemoryListView.as_view(), name="memory"),
+    *router.urls,
+]
