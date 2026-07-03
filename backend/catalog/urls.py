@@ -1,7 +1,18 @@
-"""Catalog URL routes — mounted into config.urls in this app's phase."""
+"""catalog URL routes: property dedup lookup + the listings API."""
 
 from __future__ import annotations
 
+from django.urls import path
+from rest_framework.routers import DefaultRouter
+
+from .views import ListingViewSet, PropertyLookupView
+
 app_name = "catalog"
 
-urlpatterns: list = []
+router = DefaultRouter()
+router.register("listings", ListingViewSet, basename="listing")
+
+urlpatterns = [
+    path("properties/lookup", PropertyLookupView.as_view(), name="property-lookup"),
+    *router.urls,
+]

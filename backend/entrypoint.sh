@@ -16,7 +16,10 @@ python manage.py migrate --noinput
 echo "[entrypoint] ensure demo user"
 python manage.py ensure_demo_user
 
-# P1+ seeds (King County demo data) land once the catalog app exists.
+# P1 demo data (idempotent; re-runs are a no-op). ~20k KC comps + ~40 personas
+# (users) + ~15 active listings. Non-fatal so a hiccup never blocks bring-up.
+echo "[entrypoint] seed King County demo data"
+python manage.py seed_kc || echo "[entrypoint] seed_kc failed (non-fatal); run 'make seed' manually"
 
 # Local staticfiles (admin/DRF UI). Never blocks bring-up.
 python manage.py collectstatic --noinput >/dev/null 2>&1 || true
