@@ -4,17 +4,29 @@ catalog services — the write/query seam BOTH the REST API and (P2) the copilot
 lockstep with the API.
 
 Covers: address normalization + **fetch-existing property dedup** (never mutate a
-matched Property — it's the comp basis), multi-property listing create/update, and
-the per-listing Mandate get/set (deal settings). Pure ORM, no LLM.
+matched Property — it's the comp basis), multi-property listing create/update, the
+per-listing Mandate get/set (deal settings), and **buy-box CRUD + inline deal-settings**
+(lifted here in P5 so the `/settings › Buy-boxes` REST and the copilot's buy-box tools
+share one seam — agent == API). Pure ORM, no LLM.
 """
 
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 
-from .models import Listing, ListingMedia, ListingProperty, Mandate, Property
+from .models import BuyBox, BuyBoxGeo, Listing, ListingMedia, ListingProperty, Mandate, Property
+
+
+def _to_decimal(v):
+    if v in (None, ""):
+        return None
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        return None
 
 # Street-suffix canonicalization so "1 Maple Ave" and "1 maple avenue" normalize equal.
 _SUFFIXES = {
@@ -207,3 +219,175 @@ def set_mandate_for_listing(listing: Listing, data: dict) -> dict:
     fields = {k: data[k] for k in _MANDATE_FIELDS if k in data}
     Mandate.objects.update_or_create(listing=listing, defaults=fields)
     return get_mandate_for_listing(listing)
+
+
+# --- buy-box CRUD (the buyer-side deal config; deal-settings inline) -----------
+# The `/settings › Buy-boxes` REST and the copilot's buy-box tools BOTH call these,
+# so the agent and the API stay in lockstep (lifted from the copilot dal in P5). The
+# input `fields` dict carries buy-box scalars + the inline deal-settings (ceiling_price/
+# must_haves/instructions, upserted onto the box's Mandate) + an optional single `geo`.
+_BOX_SCALAR_FIELDS = (
+    "name",
+    "strategy",
+    "is_primary",
+    "is_active",
+    "price_min",
+    "price_max",
+    "arv_min",
+    "arv_max",
+    "beds_min",
+    "baths_min",
+    "sqft_min",
+    "sqft_max",
+    "year_built_min",
+    "max_rehab_cost",
+    "property_types",
+)
+_BOX_DECIMAL_FIELDS = {"price_min", "price_max", "arv_min", "arv_max", "baths_min", "max_rehab_cost"}
+
+
+def _geo_public(g: BuyBoxGeo) -> dict:
+    return {
+        "id": g.id,
+        "geo_type": g.geo_type,
+        "mode": g.mode,
+        "state_code": g.state_code,
+        "county_fips": g.county_fips,
+        "city": g.city,
+        "zip": g.zip,
+        "radius_mi": float(g.radius_mi) if g.radius_mi is not None else None,
+        "center_lat": g.center.y if g.center is not None else None,
+        "center_lon": g.center.x if g.center is not None else None,
+    }
+
+
+def _num(v):
+    return float(v) if v is not None else None
+
+
+def serialize_buy_box(box: BuyBox) -> dict:
+    """The public buy-box view (read shape shared by REST + copilot). Keeps the P2 keys
+    (`buy_box_id`, nested `mandate`, `n_geos`) and adds the full scalar set + `geos` so the
+    settings UI round-trips."""
+    m = box.mandates.first()
+    return {
+        "buy_box_id": box.id,
+        "name": box.name,
+        "strategy": box.strategy,
+        "is_primary": box.is_primary,
+        "is_active": box.is_active,
+        "price_min": _num(box.price_min),
+        "price_max": _num(box.price_max),
+        "arv_min": _num(box.arv_min),
+        "arv_max": _num(box.arv_max),
+        "beds_min": box.beds_min,
+        "baths_min": _num(box.baths_min),
+        "sqft_min": box.sqft_min,
+        "sqft_max": box.sqft_max,
+        "year_built_min": box.year_built_min,
+        "max_rehab_cost": _num(box.max_rehab_cost),
+        "property_types": list(box.property_types or []),
+        "geos": [_geo_public(g) for g in box.geos.all()],
+        "n_geos": box.geos.count(),
+        "mandate": (
+            None
+            if m is None
+            else {
+                "ceiling_price": _num(m.ceiling_price),
+                "must_haves": list(m.must_haves or []),
+                "instructions": m.instructions,
+            }
+        ),
+    }
+
+
+def _apply_box_scalars(box: BuyBox, fields: dict) -> None:
+    for k in _BOX_SCALAR_FIELDS:
+        if fields.get(k) is not None:
+            setattr(box, k, _to_decimal(fields[k]) if k in _BOX_DECIMAL_FIELDS else fields[k])
+
+
+def _apply_box_geo(box: BuyBox, geo: dict) -> None:
+    """Create ONE BuyBoxGeo from a simple spec (named place or radius). Best-effort — the
+    ranker's candidate pool uses radius geos + nearby sales, so radius matters most."""
+    from django.contrib.gis.geos import Point
+
+    geo_type = geo.get("geo_type")
+    kwargs = {"buy_box": box, "geo_type": geo_type, "mode": geo.get("mode", "include")}
+    if geo_type == "radius":
+        lat, lon = geo.get("center_lat"), geo.get("center_lon")
+        if lat is not None and lon is not None:
+            kwargs["center"] = Point(float(lon), float(lat), srid=4326)
+        kwargs["radius_mi"] = _to_decimal(geo.get("radius_mi"))
+    else:
+        for k in ("state_code", "county_fips", "city", "zip"):
+            if geo.get(k) is not None:
+                kwargs[k] = geo[k]
+    BuyBoxGeo.objects.create(**kwargs)
+
+
+def _upsert_box_mandate(box: BuyBox, fields: dict) -> None:
+    data = {}
+    if fields.get("ceiling_price") is not None:
+        data["ceiling_price"] = _to_decimal(fields["ceiling_price"])
+    for k in ("must_haves", "instructions"):
+        if fields.get(k) is not None:
+            data[k] = fields[k]
+    if data:
+        Mandate.objects.update_or_create(buy_box=box, defaults=data)
+
+
+def list_buy_boxes(user_id: int) -> list[dict]:
+    return [
+        serialize_buy_box(b)
+        for b in BuyBox.objects.filter(buyer_id=user_id)
+        .order_by("-is_primary", "name")
+        .prefetch_related("geos", "mandates")
+    ]
+
+
+def get_buy_box(user_id: int, box_id: int) -> dict:
+    box = (
+        BuyBox.objects.filter(id=box_id, buyer_id=user_id)
+        .prefetch_related("geos", "mandates")
+        .first()
+    )
+    if box is None:
+        return {"error": f"buy-box {box_id} not found or not yours"}
+    return serialize_buy_box(box)
+
+
+def create_buy_box(user_id: int, fields: dict) -> dict:
+    with transaction.atomic():
+        box = BuyBox(
+            buyer_id=user_id,
+            name=fields.get("name") or "My buy-box",
+            strategy=fields.get("strategy") or "fix_flip",
+        )
+        _apply_box_scalars(box, fields)
+        box.save()
+        if fields.get("geo"):
+            _apply_box_geo(box, fields["geo"])
+        _upsert_box_mandate(box, fields)
+    return get_buy_box(user_id, box.id)
+
+
+def update_buy_box(user_id: int, box_id: int, fields: dict) -> dict:
+    box = BuyBox.objects.filter(id=box_id, buyer_id=user_id).first()
+    if box is None:
+        return {"error": f"buy-box {box_id} not found or not yours"}
+    with transaction.atomic():
+        _apply_box_scalars(box, fields)
+        box.save()
+        if fields.get("geo"):
+            _apply_box_geo(box, fields["geo"])
+        _upsert_box_mandate(box, fields)
+    return get_buy_box(user_id, box_id)
+
+
+def delete_buy_box(user_id: int, box_id: int) -> dict:
+    box = BuyBox.objects.filter(id=box_id, buyer_id=user_id).first()
+    if box is None:
+        return {"error": f"buy-box {box_id} not found or not yours"}
+    box.delete()  # cascades geos + its mandate
+    return {"deleted": True, "buy_box_id": box_id}

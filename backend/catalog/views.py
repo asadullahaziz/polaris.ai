@@ -19,6 +19,7 @@ from matching.engine import estimate_value, get_comps
 from . import services
 from .models import Listing
 from .serializers import (
+    BuyBoxWriteSerializer,
     ListingCreateSerializer,
     ListingDetailSerializer,
     ListingSummarySerializer,
@@ -107,3 +108,38 @@ class ListingViewSet(
         ser = MandateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         return Response(services.set_mandate_for_listing(listing, ser.validated_data))
+
+
+class BuyBoxViewSet(viewsets.ViewSet):
+    """The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
+    Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+    copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
+    a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
+    id returns an error dict → 404)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        return Response(services.list_buy_boxes(request.user.id))
+
+    def retrieve(self, request, pk=None):
+        result = services.get_buy_box(request.user.id, int(pk))
+        return Response(result, status=404 if "error" in result else 200)
+
+    def create(self, request):
+        ser = BuyBoxWriteSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        return Response(services.create_buy_box(request.user.id, ser.validated_data), status=201)
+
+    def update(self, request, pk=None):
+        ser = BuyBoxWriteSerializer(data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        result = services.update_buy_box(request.user.id, int(pk), ser.validated_data)
+        return Response(result, status=404 if "error" in result else 200)
+
+    def partial_update(self, request, pk=None):
+        return self.update(request, pk=pk)
+
+    def destroy(self, request, pk=None):
+        result = services.delete_buy_box(request.user.id, int(pk))
+        return Response(result, status=404 if "error" in result else 200)

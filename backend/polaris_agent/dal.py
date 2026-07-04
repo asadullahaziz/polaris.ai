@@ -6,7 +6,8 @@ ORM boundary in one place (base plan §"the seams").
 
 v2 rewire (P2): copilot chats/memory → `ai.AiChat/AiMessage/AgentMemory`; listings /
 property lookup / valuation / mandate → `catalog.services` + `matching.engine` (the
-SAME seam the REST API calls, so the agent and API stay in lockstep); buy-box CRUD +
+SAME seam the REST API calls, so the agent and API stay in lockstep); buy-box CRUD
+(lifted into `catalog.services` in P5, so `/settings › Buy-boxes` REST == the agent) +
 ranking/assessment likewise. Every function is **user-scoped** — it takes the acting
 principal's id and only ever touches that user's own data.
 
@@ -382,156 +383,39 @@ get_mandate_for_listing = sync_to_async(_get_mandate_for_listing)
 set_mandate_for_listing = sync_to_async(_set_mandate_for_listing)
 
 
-# ---- Buy-box CRUD (the buyer-side deal config; deal-settings inline) ------------
-_BOX_SCALAR_FIELDS = (
-    "name",
-    "strategy",
-    "is_primary",
-    "is_active",
-    "price_min",
-    "price_max",
-    "arv_min",
-    "arv_max",
-    "beds_min",
-    "sqft_min",
-    "sqft_max",
-    "year_built_min",
-    "max_rehab_cost",
-    "property_types",
-)
-_BOX_DECIMAL_FIELDS = {"price_min", "price_max", "arv_min", "arv_max", "max_rehab_cost"}
-
-
-def _box_public(box) -> dict:
-    m = box.mandates.first()
-    return {
-        "buy_box_id": box.id,
-        "name": box.name,
-        "strategy": box.strategy,
-        "is_primary": box.is_primary,
-        "is_active": box.is_active,
-        "price_min": float(box.price_min) if box.price_min is not None else None,
-        "price_max": float(box.price_max) if box.price_max is not None else None,
-        "beds_min": box.beds_min,
-        "sqft_min": box.sqft_min,
-        "property_types": list(box.property_types or []),
-        "n_geos": box.geos.count(),
-        "mandate": (
-            None
-            if m is None
-            else {
-                "ceiling_price": float(m.ceiling_price) if m.ceiling_price is not None else None,
-                "must_haves": list(m.must_haves or []),
-                "instructions": m.instructions,
-            }
-        ),
-    }
-
-
+# ---- Buy-box CRUD (delegates to catalog.services — the shared API seam, P5) -------
+# Lifted into `catalog.services` in P5 so the `/settings › Buy-boxes` REST and these
+# copilot tools share ONE seam (agent == API). dal stays the user-scoped async wrapper;
+# the copilot's flat `fields` contract (scalars + inline ceiling/must_haves/instructions
+# + a single `geo`) is unchanged — it IS the services input shape.
 def _list_buy_boxes(user_id: int) -> list[dict]:
-    from catalog.models import BuyBox
+    from catalog import services
 
-    return [
-        _box_public(b)
-        for b in BuyBox.objects.filter(buyer_id=user_id)
-        .order_by("-is_primary", "name")
-        .prefetch_related("geos", "mandates")
-    ]
+    return services.list_buy_boxes(user_id)
 
 
 def _get_buy_box(user_id: int, box_id: int) -> dict:
-    from catalog.models import BuyBox
+    from catalog import services
 
-    box = BuyBox.objects.filter(id=box_id, buyer_id=user_id).first()
-    if box is None:
-        return {"error": f"buy-box {box_id} not found or not yours"}
-    return _box_public(box)
-
-
-def _apply_box_scalars(box, fields: dict) -> None:
-    for k in _BOX_SCALAR_FIELDS:
-        if fields.get(k) is not None:
-            setattr(box, k, _to_decimal(fields[k]) if k in _BOX_DECIMAL_FIELDS else fields[k])
-
-
-def _apply_box_geo(box, geo: dict) -> None:
-    """Create ONE BuyBoxGeo from a simple spec (named place or radius). Best-effort —
-    the ranker's candidate pool uses radius geos + nearby sales, so radius matters most."""
-    from django.contrib.gis.geos import Point
-
-    from catalog.models import BuyBoxGeo
-
-    geo_type = geo.get("geo_type")
-    kwargs = {"buy_box": box, "geo_type": geo_type, "mode": geo.get("mode", "include")}
-    if geo_type == "radius":
-        lat, lon = geo.get("center_lat"), geo.get("center_lon")
-        if lat is not None and lon is not None:
-            kwargs["center"] = Point(float(lon), float(lat), srid=4326)
-        kwargs["radius_mi"] = _to_decimal(geo.get("radius_mi"))
-    else:
-        for k in ("state_code", "county_fips", "city", "zip"):
-            if geo.get(k) is not None:
-                kwargs[k] = geo[k]
-    BuyBoxGeo.objects.create(**kwargs)
-
-
-def _upsert_box_mandate(box, fields: dict) -> None:
-    from catalog.models import Mandate
-
-    data = {}
-    if fields.get("ceiling_price") is not None:
-        data["ceiling_price"] = _to_decimal(fields["ceiling_price"])
-    for k in ("must_haves", "instructions"):
-        if fields.get(k) is not None:
-            data[k] = fields[k]
-    if data:
-        Mandate.objects.update_or_create(buy_box=box, defaults=data)
+    return services.get_buy_box(user_id, box_id)
 
 
 def _create_buy_box(user_id: int, fields: dict) -> dict:
-    from django.db import transaction
+    from catalog import services
 
-    from catalog.models import BuyBox
-
-    with transaction.atomic():
-        box = BuyBox(
-            buyer_id=user_id,
-            name=fields.get("name") or "My buy-box",
-            strategy=fields.get("strategy") or "fix_flip",
-        )
-        _apply_box_scalars(box, fields)
-        box.save()
-        if fields.get("geo"):
-            _apply_box_geo(box, fields["geo"])
-        _upsert_box_mandate(box, fields)
-    return _get_buy_box(user_id, box.id)
+    return services.create_buy_box(user_id, fields)
 
 
 def _update_buy_box(user_id: int, box_id: int, fields: dict) -> dict:
-    from django.db import transaction
+    from catalog import services
 
-    from catalog.models import BuyBox
-
-    box = BuyBox.objects.filter(id=box_id, buyer_id=user_id).first()
-    if box is None:
-        return {"error": f"buy-box {box_id} not found or not yours"}
-    with transaction.atomic():
-        _apply_box_scalars(box, fields)
-        box.save()
-        if fields.get("geo"):
-            _apply_box_geo(box, fields["geo"])
-        _upsert_box_mandate(box, fields)
-    return _get_buy_box(user_id, box_id)
+    return services.update_buy_box(user_id, box_id, fields)
 
 
 def _delete_buy_box(user_id: int, box_id: int) -> dict:
-    from catalog.models import BuyBox
+    from catalog import services
 
-    box = BuyBox.objects.filter(id=box_id, buyer_id=user_id).first()
-    if box is None:
-        return {"error": f"buy-box {box_id} not found or not yours"}
-    box.delete()  # cascades geos + its mandate
-    return {"deleted": True, "buy_box_id": box_id}
+    return services.delete_buy_box(user_id, box_id)
 
 
 list_buy_boxes = sync_to_async(_list_buy_boxes)

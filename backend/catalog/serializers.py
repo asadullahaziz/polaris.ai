@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import BUNDLE_TYPES, LISTING_STATUSES, MEDIA_KINDS, Listing, ListingMedia, Property
+from .models import (
+    BUNDLE_TYPES,
+    GEO_MODES,
+    GEO_TYPES,
+    LISTING_STATUSES,
+    MEDIA_KINDS,
+    STRATEGIES,
+    Listing,
+    ListingMedia,
+    Property,
+)
 
 
 class PropertySerializer(serializers.ModelSerializer):
@@ -190,3 +200,67 @@ class ListingUpdateSerializer(serializers.Serializer):
     bundle_type = serializers.ChoiceField(choices=[b[0] for b in BUNDLE_TYPES], required=False)
     status = serializers.ChoiceField(choices=[s[0] for s in LISTING_STATUSES], required=False)
     mandate = MandateSerializer(required=False)
+
+
+# --- buy-box (the /settings › Buy-boxes write payload) ------------------------
+class BuyBoxGeoWriteSerializer(serializers.Serializer):
+    """One geography spec added to a buy-box (radius or named-place). Maps 1:1 to the
+    `geo` dict `catalog.services._apply_box_geo` consumes."""
+
+    geo_type = serializers.ChoiceField(choices=[g[0] for g in GEO_TYPES])
+    mode = serializers.ChoiceField(choices=[m[0] for m in GEO_MODES], default="include")
+    # radius
+    center_lat = serializers.FloatField(required=False, allow_null=True)
+    center_lon = serializers.FloatField(required=False, allow_null=True)
+    radius_mi = serializers.DecimalField(
+        max_digits=6, decimal_places=2, required=False, allow_null=True
+    )
+    # named place
+    state_code = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    county_fips = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    city = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    zip = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+
+class BuyBoxWriteSerializer(serializers.Serializer):
+    """Create/update payload for a buy-box: criteria scalars + **inline deal-settings**
+    (ceiling/must_haves/instructions, upserted onto the box's Mandate) + an optional single
+    `geo`. `validated_data` is the flat `fields` dict `catalog.services` consumes — the same
+    shape the copilot's buy-box tools pass, so agent == API. All fields optional (one
+    serializer covers create + partial update); services defaults name/strategy on create."""
+
+    name = serializers.CharField(required=False, allow_blank=True)
+    strategy = serializers.ChoiceField(choices=[s[0] for s in STRATEGIES], required=False)
+    is_primary = serializers.BooleanField(required=False)
+    is_active = serializers.BooleanField(required=False)
+    price_min = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    price_max = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    arv_min = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    arv_max = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    beds_min = serializers.IntegerField(required=False, allow_null=True)
+    baths_min = serializers.DecimalField(
+        max_digits=3, decimal_places=1, required=False, allow_null=True
+    )
+    sqft_min = serializers.IntegerField(required=False, allow_null=True)
+    sqft_max = serializers.IntegerField(required=False, allow_null=True)
+    year_built_min = serializers.IntegerField(required=False, allow_null=True)
+    max_rehab_cost = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    property_types = serializers.ListField(child=serializers.CharField(), required=False)
+    # inline deal-settings (mandate)
+    ceiling_price = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    must_haves = serializers.ListField(child=serializers.CharField(), required=False)
+    instructions = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    # one geography spec to add (optional)
+    geo = BuyBoxGeoWriteSerializer(required=False)
