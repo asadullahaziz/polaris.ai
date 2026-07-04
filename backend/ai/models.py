@@ -15,8 +15,14 @@ CHECK — so the transcript rehydrates straight into LangChain messages (dal).
 crosses the disclosure boundary. Written by `chat.responder_service.log_action` after
 every commit / draft / escalate.
 
-Deferred to their phases (kept off this migration so it stays clean):
-  * `OutreachCampaign`/`OutreachRecipient` → P5 (the outreach ledger + fan-out).
+`OutreachCampaign`/`OutreachRecipient` (added P5) are the seller's outreach ledger —
+one `launch_outreach` = one campaign for one listing → N **registered** buyers.
+`OutreachRecipient` IS the delivery ledger: a partial-unique on SENT rows guarantees a
+listing reaches each buyer at most once, ever, across campaigns (a cancelled proposal
+doesn't block a later legitimate send). v2 rewire: registered users only (prospects are
+gone), the opened thread is the ONE pair `chat.Chat` (opener posted as an agent message
++ a `MessageAttachment(kind=listing)`, not a `subject_listing`), and the copilot chat the
+launch was fired from is an `ai.AiChat` (where progress ticks + the final summary land).
 """
 
 from __future__ import annotations
@@ -147,3 +153,109 @@ class AgentActionLog(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"agent_action:{self.pk} ({self.action_type})"
+
+
+# =====================================================================================
+# Outreach (P5) — the seller's buyer-discovery fan-out ledger (Graph 3).
+# =====================================================================================
+CAMPAIGN_STATUSES = [
+    ("awaiting_approval", "awaiting_approval"),
+    ("sending", "sending"),
+    ("done", "done"),
+    ("cancelled", "cancelled"),
+]
+RECIPIENT_STATUSES = [
+    ("pending", "pending"),
+    ("sent", "sent"),
+    ("skipped_already_contacted", "skipped_already_contacted"),
+    ("failed", "failed"),
+    ("cancelled", "cancelled"),
+]
+# In-app only in v1/v2; kept for forward-compat (notifications are in-app only).
+CHANNELS = [
+    ("in_app", "in_app"),
+    ("sms", "sms"),
+    ("email", "email"),
+    ("whatsapp", "whatsapp"),
+]
+
+
+class OutreachCampaign(models.Model):
+    """One `launch_outreach` = one campaign for one listing → N ranked buyers, staged
+    `awaiting_approval` until the seller approves the batch (the send gate)."""
+
+    listing = models.ForeignKey(
+        "catalog.Listing", on_delete=models.CASCADE, related_name="outreach_campaigns"
+    )
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="outreach_campaigns"
+    )
+    # The copilot session this launch fired from — where the fan-out pushes progress ticks
+    # + the final summary over the WS (`copilot_{seller}` group). NULL if launched outside
+    # the copilot. v2: `ai.AiChat`, not the fused v1 conversation.
+    copilot_ai_chat = models.ForeignKey(
+        "ai.AiChat",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="outreach_campaigns",
+    )
+    status = models.TextField(default="awaiting_approval", choices=CAMPAIGN_STATUSES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "outreach_campaign"
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"campaign:{self.pk} ({self.status})"
+
+
+class OutreachRecipient(models.Model):
+    """The DELIVERY LEDGER. v2: registered users only (prospects are gone), so
+    `recipient_user` is required and the buyer-or-prospect CHECK disappears. The SENT
+    partial-unique is the ledger guarantee — a listing reaches each buyer once, ever."""
+
+    campaign = models.ForeignKey(
+        OutreachCampaign, on_delete=models.CASCADE, related_name="recipients"
+    )
+    listing = models.ForeignKey(
+        "catalog.Listing", on_delete=models.CASCADE, related_name="outreach_recipients"
+    )
+    recipient_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="outreach_received",
+    )
+
+    rank_score = models.DecimalField(  # likelihood-to-buy (deterministic)
+        max_digits=6, decimal_places=4, null=True, blank=True
+    )
+    rank_reason = models.TextField(null=True, blank=True)  # "why this buyer"
+    draft_body = models.TextField(null=True, blank=True)  # shown for approval; sent verbatim
+    channel = models.TextField(default="in_app", choices=CHANNELS)
+    status = models.TextField(default="pending", choices=RECIPIENT_STATUSES)
+    # The ONE pair chat this outreach opened (v2: chat.Chat, not a per-listing thread).
+    chat = models.ForeignKey(
+        "chat.Chat",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="outreach_recipients",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "outreach_recipient"
+        constraints = [
+            # Ledger guarantee — on SENT rows only (a cancelled proposal never blocks a
+            # later legitimate send).
+            models.UniqueConstraint(
+                fields=["listing", "recipient_user"],
+                condition=models.Q(status="sent"),
+                name="uniq_ledger_user",
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"recipient:{self.pk} ({self.status})"

@@ -59,10 +59,9 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         )
         await self.accept()
         await self._send("copilot.ready", {"user": user.get_username()})
-        # Join the per-user group so the P5 outreach fan-out can push progress ticks +
+        # Join the per-user group so the outreach fan-out (P5) can push progress ticks +
         # the final summary into this chat. Non-fatal + bounded: a channel-layer hiccup
-        # must never take down the chat (the group only carries secondary pushes). Inert
-        # until P5 wires the fan-out.
+        # must never take down the chat (the group only carries secondary pushes).
         try:
             await asyncio.wait_for(
                 self.channel_layer.group_add(self.group_name, self.channel_name), timeout=3
@@ -81,7 +80,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _send(self, type_: str, data: dict) -> None:
         await self.send(text_data=json.dumps({"type": type_, "data": data}))
 
-    # ---- Channel-layer handlers: P5 outreach fan-out → this socket (inert until P5) --
+    # ---- Channel-layer handlers: outreach fan-out (P5) → this socket ----------------
     async def outreach_progress(self, event):
         await self._send("outreach.progress", event.get("data", {}))
 

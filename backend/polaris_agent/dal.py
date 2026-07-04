@@ -20,8 +20,10 @@ ownership, context = full transcript + all listing attachments + the principal's
 mandates. `responder_assess`/`responder_estimate` give the graph its deterministic deal
 math over ANY listing (the focal one is owned by the counterparty on the buy side).
 
-Deferred to later phases (kept out so the seam is honest):
-  * launch_outreach                   → P5 (the outreach ledger + fan-out)
+v2 rewire (P5): `launch_outreach`/`approve_campaign` wrap `ai.outreach_service` (the pure
+ledger core) so the copilot's confirm-gated outreach tool reaches it through this seam.
+The durable `outreach/approved` emit stays in the CALLER (the tool / REST view) — Inngest
+never leaks into `dal`.
 """
 
 from __future__ import annotations
@@ -577,9 +579,26 @@ def _assess_deal_for_listing(listing_id: int, seller_id: int, strategy: str | No
     return assess_deal(listing_id, strategy=strategy)
 
 
+def _launch_outreach(seller_id: int, listing_id: int, ai_chat_id=None, limit: int = 10) -> dict:
+    """Rank + draft + persist an `awaiting_approval` campaign (the pure ledger core). The
+    caller approves + emits `outreach/approved` separately (Inngest stays out of dal)."""
+    from ai.outreach_service import launch_outreach
+
+    return launch_outreach(seller_id, listing_id, copilot_ai_chat_id=ai_chat_id, limit=limit)
+
+
+def _approve_campaign(seller_id: int, campaign_id: int) -> dict:
+    """Flip an `awaiting_approval` campaign to `sending` (the batch send gate)."""
+    from ai.outreach_service import approve_campaign
+
+    return approve_campaign(seller_id, campaign_id)
+
+
 rank_buyers = sync_to_async(_rank_buyers)
 find_buyers = sync_to_async(_find_buyers)
 assess_deal_for_listing = sync_to_async(_assess_deal_for_listing)
+launch_outreach = sync_to_async(_launch_outreach)
+approve_campaign = sync_to_async(_approve_campaign)
 
 
 # ---- Away-responder (Graph 2) — principal-centric plan + deal math (P4) ----------

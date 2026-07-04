@@ -19,12 +19,17 @@ WHEN to call and narrates the WHY — it never invents a price, score, or id.
 
 from __future__ import annotations
 
+import logging
+
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
 from polaris_agent import dal
 from polaris_agent.models import get_model
+
+log = logging.getLogger(__name__)
 
 # Names of the tools that go through the confirm-every-write interrupt (introspected
 # by tests + the consumer's UX copy). write_memory is a low-stakes write and is exempt.
@@ -35,6 +40,7 @@ WRITE_TOOL_NAMES = {
     "create_buy_box",
     "update_buy_box",
     "delete_buy_box",
+    "launch_outreach",
 }
 
 
@@ -373,6 +379,61 @@ def copilot_tools(principal_id: int) -> list:
             return {"status": "cancelled", "action": "delete_buy_box"}
         return await dal.delete_buy_box(principal_id, buy_box_id)
 
+    @tool
+    async def launch_outreach(
+        listing_id: int, limit: int = 10, config: RunnableConfig | None = None
+    ) -> dict:
+        """Rank the buyers most likely to close on one of the user's listings, draft a
+        personalized opener for each, and — on the user's confirmation — open the pair chat
+        with each buyer and send it (the listing is attached). Deterministic ranking;
+        templated openers. Requires confirmation before any message is sent."""
+        # Propose: rank first so the confirm card shows the actual shortlist. Read-only, so
+        # it re-runs harmlessly when the graph resumes after the interrupt.
+        ranked = await dal.rank_buyers(listing_id, principal_id, limit=limit)
+        if ranked.get("error"):
+            return ranked
+        rows = ranked.get("ranked", [])
+        if not rows:
+            return {"status": "no_buyers", "note": "No matching buyers found near this listing."}
+        proposal = {
+            "listing_id": listing_id,
+            "buyers": [
+                {"name": r["name"], "score": r["score"], "reason": r["reason"]} for r in rows
+            ],
+        }
+        if not _confirm(
+            "launch_outreach",
+            f"Send personalized outreach to {len(rows)} buyer(s) for listing #{listing_id}?",
+            proposal,
+        ):
+            return {"status": "cancelled", "action": "launch_outreach"}
+
+        # Commit: persist the campaign (via the pure ledger core), flip it to sending, and
+        # fire the durable fan-out event. The Inngest emit lives HERE (not in dal), and is
+        # best-effort — the campaign is already staged, so a dev-server hiccup only means
+        # the fan-out is retried, never a lost campaign.
+        ai_chat_id = (config or {}).get("configurable", {}).get("ai_chat_id")
+        res = await dal.launch_outreach(principal_id, listing_id, ai_chat_id=ai_chat_id, limit=limit)
+        campaign_id = res.get("campaign_id")
+        if not campaign_id:
+            return res  # e.g. no buyers / listing error — nothing to dispatch
+        approved = await dal.approve_campaign(principal_id, campaign_id)
+        res["dispatched"] = False
+        if approved.get("status") == "sending":
+            try:
+                import inngest
+
+                from orchestration.client import inngest_client
+
+                await inngest_client.send(
+                    inngest.Event(name="outreach/approved", data={"campaign_id": campaign_id})
+                )
+                res["dispatched"] = True
+            except Exception as exc:  # noqa: BLE001 - staged; fan-out will be retried
+                log.warning("failed to emit outreach/approved: %s", exc)
+                res["warning"] = "queued locally; fan-out event not delivered to Inngest"
+        return res
+
     # write_memory is a low-stakes write — no confirmation gate (revisions exempt memory).
     @tool
     async def write_memory(content: str, namespace: str = "general") -> dict:
@@ -401,6 +462,7 @@ def copilot_tools(principal_id: int) -> list:
         create_buy_box,
         update_buy_box,
         delete_buy_box,
+        launch_outreach,
         # low-stakes write (no gate)
         write_memory,
     ]

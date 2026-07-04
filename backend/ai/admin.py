@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from django.contrib import admin
 
-from .models import AgentMemory, AiChat, AiMessage
+from .models import AgentMemory, AiChat, AiMessage, OutreachCampaign, OutreachRecipient
 
 
 @admin.register(AiChat)
@@ -25,3 +25,17 @@ class AgentMemoryAdmin(admin.ModelAdmin):
     list_display = ("id", "principal", "namespace", "updated_at")
     list_filter = ("namespace",)
     search_fields = ("content", "principal__email")
+
+
+@admin.register(OutreachCampaign)
+class OutreachCampaignAdmin(admin.ModelAdmin):
+    list_display = ("id", "seller", "listing", "status", "created_at")
+    list_filter = ("status",)
+    search_fields = ("seller__email",)
+
+
+@admin.register(OutreachRecipient)
+class OutreachRecipientAdmin(admin.ModelAdmin):
+    list_display = ("id", "campaign", "recipient_user", "status", "rank_score", "sent_at")
+    list_filter = ("status",)
+    search_fields = ("recipient_user__email",)
