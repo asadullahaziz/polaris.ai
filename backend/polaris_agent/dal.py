@@ -14,8 +14,13 @@ Convention (v1, kept): a private sync `_fn` does the ORM work; the exported name
 its `sync_to_async` wrapper. Django models + cross-app services are imported lazily
 inside each function so this module stays importable outside the app graph.
 
-Deferred to later phases (kept out of P2 so the seam is honest):
-  * responder_plan / thread context  → P4 (the away-responder over `chat.*`)
+v2 rewire (P4): `responder_plan` is **principal-centric** over `chat.*` (no role, no
+`subject_listing`) — principal = the other `ChatMember`, stance from focal-listing
+ownership, context = full transcript + all listing attachments + the principal's in-play
+mandates. `responder_assess`/`responder_estimate` give the graph its deterministic deal
+math over ANY listing (the focal one is owned by the counterparty on the buy side).
+
+Deferred to later phases (kept out so the seam is honest):
   * launch_outreach                   → P5 (the outreach ledger + fan-out)
 """
 
@@ -575,3 +580,297 @@ def _assess_deal_for_listing(listing_id: int, seller_id: int, strategy: str | No
 rank_buyers = sync_to_async(_rank_buyers)
 find_buyers = sync_to_async(_find_buyers)
 assess_deal_for_listing = sync_to_async(_assess_deal_for_listing)
+
+
+# ---- Away-responder (Graph 2) — principal-centric plan + deal math (P4) ----------
+# The away-assistant covers one human's chats while they're away. It reads over the WHOLE
+# free-form chat: the full transcript, every listing ever attached, and the principal's
+# in-play mandates. No fixed role, no bound listing (revisions §auto-responder).
+_DISPOSITION_TO_STRATEGY = {"flip": "fix_flip", "hold": "buy_hold", "brrrr": "brrrr"}
+
+
+def _mandate_dict(m) -> dict:
+    """A mandate row → the PRIVATE dict the responder reasons from (v2 drops
+    auto_reply/autonomy — those are user-level on UserProfile now)."""
+    return {
+        "floor_price": int(m.floor_price) if m.floor_price is not None else None,
+        "ceiling_price": int(m.ceiling_price) if m.ceiling_price is not None else None,
+        "must_haves": list(m.must_haves or []),
+        "availability_window": m.availability_window,
+        "instructions": m.instructions or "",
+    }
+
+
+def _listing_public(listing, principal_id: int) -> dict:
+    """Public listing facts (visible to BOTH parties) + an ownership flag. `owned_by_
+    principal` is what derives stance — the away-assistant defends a listing it owns and
+    evaluates one it doesn't."""
+    lp = listing.listingproperty_set.select_related("property").order_by("sort_order").first()
+    prop = lp.property if lp else None
+    ask = listing.asking_price if listing.asking_price is not None else (lp.asking_price if lp else None)
+    return {
+        "listing_id": listing.id,
+        "title": listing.title,
+        "address": prop.address_raw if prop else None,
+        "beds": prop.beds if prop else None,
+        "baths": float(prop.baths) if prop and prop.baths is not None else None,
+        "sqft": prop.sqft if prop else None,
+        "condition": prop.condition if prop else None,
+        "year_built": prop.year_built if prop else None,
+        "asking_price": float(ask) if ask is not None else None,
+        "owned_by_principal": listing.seller_id == principal_id,
+    }
+
+
+def _chat_listings(chat_id: int, principal_id: int) -> tuple[list[dict], int | None]:
+    """Every listing attached anywhere in the chat (dedup'd), plus the FOCAL one (the
+    most-recently referenced attachment). Free-form chats accrue many listings over time,
+    so the responder tracks the latest-referenced one (revisions decision #4)."""
+    from chat.models import MessageAttachment
+
+    rows = (
+        MessageAttachment.objects.filter(
+            message__chat_id=chat_id, kind="listing", listing__isnull=False
+        )
+        .select_related("listing")
+        .order_by("message__created_at", "sort_order", "id")
+    )
+    seen: dict[int, dict] = {}
+    order: list[int] = []
+    focal_id: int | None = None
+    for a in rows:  # ascending by attachment time
+        lid = a.listing_id
+        if lid not in seen:
+            seen[lid] = _listing_public(a.listing, principal_id)
+            order.append(lid)
+        focal_id = lid  # last iteration wins → the newest attachment = focal
+    return [seen[lid] for lid in order], focal_id
+
+
+def _chat_transcript(chat_id: int, principal_id: int) -> list[dict]:
+    """The PUBLIC transcript (sent messages only), oldest first, tagged with whether each
+    was authored by the principal (drives the You/Counterparty rendering in Stage 2)."""
+    from chat.models import Message
+
+    return [
+        {
+            "id": m["id"],
+            "kind": m["kind"],
+            "sender": m["sender_id"],
+            "body": m["body"],
+            "is_principal": m["sender_id"] == principal_id,
+        }
+        for m in Message.objects.filter(chat_id=chat_id, status="sent")
+        .order_by("created_at", "id")
+        .values("id", "kind", "sender_id", "body")
+    ]
+
+
+def _primary_active_box(user_id: int):
+    from catalog.models import BuyBox
+
+    return (
+        BuyBox.objects.filter(buyer_id=user_id, is_active=True)
+        .order_by("-is_primary", "id")
+        .first()
+    )
+
+
+def _listing_mandate(listing_id: int) -> dict | None:
+    from catalog.models import Mandate
+
+    m = Mandate.objects.filter(listing_id=listing_id).first()
+    return _mandate_dict(m) if m else None
+
+
+def _box_mandate_dict(box) -> dict | None:
+    if box is None:
+        return None
+    m = box.mandates.first()
+    return _mandate_dict(m) if m else None
+
+
+def _in_play_mandates(principal_id: int, listings: list[dict]) -> list[dict]:
+    """Every private mandate the principal holds that could bear on this chat: floors for
+    owned listings referenced here + ceilings/must-haves for their active buy-boxes. The
+    UNION of their limits is what the output check scans (revisions §disclosure)."""
+    from catalog.models import Mandate
+
+    out: list[dict] = []
+    owned_ids = [lst["listing_id"] for lst in listings if lst.get("owned_by_principal")]
+    if owned_ids:
+        out.extend(_mandate_dict(m) for m in Mandate.objects.filter(listing_id__in=owned_ids))
+    out.extend(
+        _mandate_dict(m)
+        for m in Mandate.objects.filter(
+            buy_box__buyer_id=principal_id, buy_box__is_active=True
+        )
+    )
+    return out
+
+
+def _union_limits(mandates: list[dict]) -> list[int]:
+    vals: list[int] = []
+    for m in mandates:
+        for k in ("floor_price", "ceiling_price"):
+            v = m.get(k)
+            if v is not None:
+                vals.append(int(v))
+    return sorted(set(vals))
+
+
+def _missing_must_haves(focal: dict | None, focal_mandate: dict) -> list[str]:
+    """Focal must-haves not evidenced in the focal listing's public facts → Stage 1 may
+    ask about them (drives the "listing didn't mention repairs → ask about repairs"
+    behavior). Deterministic, must-haves stay whitelisted so asking is always allowed."""
+    musts = (focal_mandate or {}).get("must_haves") or []
+    if not musts or not focal:
+        return []
+    hay = " ".join(
+        str(v).lower()
+        for v in (
+            focal.get("title"),
+            focal.get("address"),
+            focal.get("condition"),
+            focal.get("year_built"),
+        )
+        if v is not None
+    )
+    return [mh for mh in musts if str(mh).lower() not in hay]
+
+
+def _dominant_strategy_for_user(user_id: int) -> str | None:
+    from collections import Counter
+
+    from catalog.models import Sale
+
+    rows = Sale.objects.filter(buyer_id=user_id).values_list("disposition", flat=True)
+    counts = Counter(
+        _DISPOSITION_TO_STRATEGY.get(d) for d in rows if _DISPOSITION_TO_STRATEGY.get(d)
+    )
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
+    """Everything Graph 2 needs to run, or {'skip': reason} when no autonomous reply is
+    warranted (auto-reply off, terminal chat, own message, …). Presence + the reply cap
+    are re-checked by the handler + the commit gate; this resolves the principal, stance,
+    and context."""
+    from chat.models import Chat, ChatMember, Message
+    from users.models import UserProfile
+
+    chat = Chat.objects.filter(id=chat_id).first()
+    if chat is None:
+        return {"skip": "chat not found"}
+    if chat.status in ("escalated", "closed") or chat.terminal is not None:
+        return {"skip": f"chat terminal ({chat.status}/{chat.terminal})"}
+
+    inbound = (
+        Message.objects.filter(id=inbound_message_id, chat_id=chat_id)
+        .values("id", "kind", "sender_id", "body")
+        .first()
+    )
+    if inbound is None:
+        return {"skip": "inbound not found"}
+    if inbound["sender_id"] is None:
+        return {"skip": "inbound has no sender (system message)"}
+
+    member_ids = list(
+        ChatMember.objects.filter(chat_id=chat_id).values_list("user_id", flat=True)
+    )
+    if len(member_ids) != 2 or inbound["sender_id"] not in member_ids:
+        return {"skip": "inbound sender is not one of the two chat members"}
+
+    # Principal = the OTHER member (the away human the agent covers for). The inbound
+    # sender is the counterparty this turn — including the agent-inbound of the bounded
+    # loop, where the sender is the OTHER side's principal.
+    principal_id = next(uid for uid in member_ids if uid != inbound["sender_id"])
+    counterparty_user_id = inbound["sender_id"]
+
+    prof = (
+        UserProfile.objects.filter(user_id=principal_id)
+        .values("auto_reply_when_away", "agent_autonomy", "agent_instructions")
+        .first()
+        or {}
+    )
+    if not prof.get("auto_reply_when_away", False):
+        return {"skip": "auto_reply_when_away disabled for principal"}
+
+    listings, focal_listing_id = _chat_listings(chat_id, principal_id)
+    focal = next((lst for lst in listings if lst["listing_id"] == focal_listing_id), None)
+
+    # Stance from OWNERSHIP of the focal listing (deterministic).
+    stance = "neutral"
+    strategy: str | None = None
+    focal_mandate: dict = {}
+    if focal is not None:
+        if focal["owned_by_principal"]:
+            stance = "sell_side"
+            focal_mandate = _listing_mandate(focal_listing_id) or {}
+        else:
+            box = _primary_active_box(principal_id)
+            if box is not None:  # a plausible buyer → buy-side; else stay neutral
+                stance = "buy_side"
+                focal_mandate = _box_mandate_dict(box) or {}
+                strategy = box.strategy or _dominant_strategy_for_user(principal_id)
+
+    mandates = _in_play_mandates(principal_id, listings)
+    namespace = {"sell_side": "seller", "buy_side": "buyer"}.get(stance, "general")
+
+    return {
+        "principal_id": principal_id,
+        "counterparty_user_id": counterparty_user_id,
+        "chat_id": chat_id,
+        "inbound_message_id": inbound_message_id,
+        "inbound": inbound,
+        "stance": stance,
+        "focal_listing_id": focal_listing_id,
+        "focal_listing": focal or {},
+        "listings": listings,
+        "strategy": strategy,
+        "autonomy": prof.get("agent_autonomy") or "draft_for_approval",
+        "agent_instructions": prof.get("agent_instructions") or "",
+        "mandates": mandates,
+        "focal_mandate": focal_mandate,
+        "private_limits": _union_limits(mandates),
+        "missing_must_haves": _missing_must_haves(focal, focal_mandate),
+        "memory": _read_memory(principal_id, namespace=namespace, limit=10),
+        "transcript": _chat_transcript(chat_id, principal_id),
+        "display_name": _display_name(principal_id),
+    }
+
+
+def _responder_assess(listing_id: int, strategy: str | None) -> dict:
+    """Deterministic wholesale verdict for the FOCAL listing (buy-side). No ownership
+    check — the focal listing is the counterparty's on the buy side."""
+    from matching.engine import assess_deal
+
+    return assess_deal(listing_id, strategy=strategy)
+
+
+def _responder_estimate(listing_id: int) -> dict:
+    """Market value + a few comps for the FOCAL listing (sell-side price defense)."""
+    from catalog.models import ListingProperty
+    from matching.engine import estimate_value, get_comps
+
+    lp = (
+        ListingProperty.objects.filter(listing_id=listing_id)
+        .select_related("property")
+        .order_by("sort_order")
+        .first()
+    )
+    prop = lp.property if lp else None
+    if prop is None:
+        return {}
+    val = estimate_value(prop, arv=False)
+    comps = get_comps(prop)
+    return {
+        "value": val,
+        "n_comps": comps.get("n"),
+        "comps": comps.get("comps", [])[:5],
+    }
+
+
+responder_plan = sync_to_async(_responder_plan)
+responder_assess = sync_to_async(_responder_assess)
+responder_estimate = sync_to_async(_responder_estimate)

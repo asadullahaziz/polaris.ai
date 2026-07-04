@@ -10,9 +10,12 @@ and the buyer/seller shape it carried.
 `ai_message.role` is LLM-native (`user|assistant|system|tool`) — no author_side, no
 CHECK — so the transcript rehydrates straight into LangChain messages (dal).
 
+`AgentActionLog` (added P4) is the away-responder's PRIVATE audit trail over a human
+`chat.Chat` — its `private_rationale` (folded into `payload`) is owner-only and never
+crosses the disclosure boundary. Written by `chat.responder_service.log_action` after
+every commit / draft / escalate.
+
 Deferred to their phases (kept off this migration so it stays clean):
-  * `AgentActionLog` → P4 (its `conversation` FK targets `chat.Chat`, which doesn't
-    exist until P3; and only the responder writes private_rationale to it).
   * `OutreachCampaign`/`OutreachRecipient` → P5 (the outreach ledger + fan-out).
 """
 
@@ -100,3 +103,47 @@ class AgentMemory(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"memory:{self.pk} ({self.namespace})"
+
+
+# Actions the away-responder records against a human chat (mirrors the commit gate's
+# terminal outcomes). Not a hard CHECK — it's an append-only audit, kept flexible.
+AGENT_ACTION_TYPES = [
+    ("sent", "sent"),  # an autonomous reply committed
+    ("drafted", "drafted"),  # a reply parked for the principal's approval
+    ("escalated", "escalated"),  # handed to the human, nothing posted to the counterparty
+]
+
+
+class AgentActionLog(models.Model):
+    """Append-only PRIVATE audit of the away-responder acting on a human `chat.Chat`
+    (architecture §5). Every commit / draft / escalate appends one row for the
+    **principal** (the user the agent covers for). `payload` carries the whitelisted
+    disclosure audit AND the Stage-1 `private_rationale` — which is owner-only and MUST
+    never be shown to the counterparty (it never crosses the airlock; this is where it
+    lives instead). Written by `chat.responder_service.log_action`."""
+
+    principal = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="agent_actions"
+    )
+    chat = models.ForeignKey(
+        "chat.Chat",
+        on_delete=models.SET_NULL,  # keep the audit row if the chat is later removed
+        null=True,
+        blank=True,
+        related_name="agent_actions",
+    )
+    action_type = models.TextField(choices=AGENT_ACTION_TYPES)
+    summary = models.TextField(blank=True, default="")  # short human-readable line
+    payload = models.JSONField(default=dict, blank=True)  # disclosure audit + private_rationale
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "agent_action_log"
+        indexes = [
+            # Backs the principal's private "what did my agent do" timeline.
+            models.Index(fields=["principal", "-created_at"], name="agent_action_principal_idx"),
+            models.Index(fields=["chat", "created_at"], name="agent_action_chat_idx"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"agent_action:{self.pk} ({self.action_type})"

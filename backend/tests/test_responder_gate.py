@@ -1,12 +1,15 @@
 """
-P3 — the sender-based commit-gate invariant (the "exactly one autonomous reply"
-guarantee), LLM-free. Exercises `chat/responder_service.py` directly: the LLM turn
-(Graph 2) is P4; this is the DB guarantee that stands on its own.
+P3/P4 — the sender-based commit-gate invariant (the "exactly one autonomous reply per
+turn" guarantee) + the per-user reply cap that bounds the P4 agent↔agent away-cover loop.
+LLM-free: exercises `chat/responder_service.py` directly. The LLM turn (Graph 2) is smoked
+separately against OpenRouter; this is the DB guarantee that stands on its own.
 
-Covered: one reply then cap; presence stands down; the cap resets ONLY on the
-principal's own human message (not the counterparty's); escalate posts nothing to the
-counterparty; decline is terminal; a draft is owner-only then approve sends exactly once;
-the dedup ON-CONFLICT layer in isolation.
+Covered: caps at the PRINCIPAL's own `agent_reply_cap` (not a hardcoded 1); the cap
+resolves live from the principal's profile; presence stands down; the cap resets ONLY on
+the principal's own human message (not the counterparty's); the bounded agent↔agent chain
+terminates at each side's cap; escalate posts nothing to the counterparty; decline is
+terminal; a draft is owner-only then approve sends exactly once; the AgentActionLog audit
+is written; the dedup ON-CONFLICT layer in isolation.
 """
 
 from __future__ import annotations
@@ -34,6 +37,13 @@ def pair(db):
     return p, c, chat
 
 
+def _set_cap(user, n: int) -> None:
+    """Set a user's per-user away-agent reply cap (UserProfile auto-created by signal)."""
+    from users.models import UserProfile
+
+    UserProfile.objects.filter(user=user).update(agent_reply_cap=n)
+
+
 def _inbound(chat_id, sender_id, body="hi"):
     return services.post_human_message(chat_id, sender_id, body)
 
@@ -53,23 +63,74 @@ def _commit(chat, principal, counterparty, inbound_id, *, action="inform", **kw)
 
 
 @pytest.mark.django_db
-def test_commit_reply_sends_one_then_caps(pair):
+def test_commit_reply_caps_at_principal_cap(pair):
     p, c, chat = pair
-    inbound = _inbound(chat.id, c.id)
+    _set_cap(p, 2)  # this principal's away-agent may reply twice before pausing
 
-    r1 = _commit(chat, p, c, inbound["id"])
-    assert r1["status"] == "sent"
+    # Two distinct inbounds → two agent replies allowed (cap 2); the third stands down.
+    for i in range(2):
+        inbound = _inbound(chat.id, c.id, f"ping {i}")
+        assert _commit(chat, p, c, inbound["id"])["status"] == "sent"
 
-    # The principal has now covered once since the human last spoke → cap reached.
     assert svc.reply_cap_reached(chat.id, p.id) is True
 
-    # A second inbound from the counterparty while the human is still away must NOT farm
-    # a second reply — the gate stands down on the cap.
-    inbound2 = _inbound(chat.id, c.id, "you there?")
-    r2 = _commit(chat, p, c, inbound2["id"])
-    assert r2["status"] == "stood_down_cap"
+    inbound3 = _inbound(chat.id, c.id, "still there?")
+    assert _commit(chat, p, c, inbound3["id"])["status"] == "stood_down_cap"
+    assert Message.objects.filter(chat_id=chat.id, kind="agent", status="sent").count() == 2
 
-    assert Message.objects.filter(chat_id=chat.id, kind="agent", status="sent").count() == 1
+
+@pytest.mark.django_db
+def test_reply_cap_resolves_principal_profile(pair):
+    p, c, chat = pair
+    _set_cap(p, 1)
+    inbound = _inbound(chat.id, c.id)
+    assert _commit(chat, p, c, inbound["id"])["status"] == "sent"
+    # cap 1 → reached after a single reply …
+    assert svc.reply_cap_reached(chat.id, p.id) is True
+    # … and bumping the profile cap is read live (no reply added).
+    _set_cap(p, 3)
+    assert svc.reply_cap_reached(chat.id, p.id) is False
+
+
+@pytest.mark.django_db
+def test_bounded_agent_loop_terminates(pair):
+    """Both humans away: the two away-agents converse, each principal's chain re-armed by
+    the other's reply (the new agent message IS the next inbound). The linear chain stops
+    at the first side to hit its own cap — guaranteed termination."""
+    p, c, chat = pair
+    _set_cap(p, 2)
+    _set_cap(c, 3)
+
+    # C opens with a human message; P's agent covers first, then it ping-pongs.
+    inbound_id = _inbound(chat.id, c.id, "you around?")["id"]
+    principal, counterparty = p, c
+    sent_by = {p.id: 0, c.id: 0}
+    outcomes = []
+
+    for _ in range(20):  # generous ceiling; must terminate well before
+        res = svc.commit_reply(
+            chat.id,
+            principal_id=principal.id,
+            action="inform",
+            body="assistant covering while they're away",
+            disclosed_fields={},
+            inbound_message_id=inbound_id,
+            counterparty_user_id=counterparty.id,
+            presence_fn=ABSENT,
+        )
+        outcomes.append(res["status"])
+        if res["status"] != "sent":
+            break  # this arm hit its cap → in the real loop it escalates; chain ends
+        sent_by[principal.id] += 1
+        inbound_id = res["message_id"]  # the new agent message arms the counterparty
+        principal, counterparty = counterparty, principal  # ping-pong
+
+    assert outcomes[-1] == "stood_down_cap"  # the chain terminated on a cap, not the ceiling
+    assert sent_by[p.id] == 2  # P hit its own cap of 2
+    assert len(outcomes) < 20
+    assert Message.objects.filter(chat_id=chat.id, kind="agent", status="sent").count() == sum(
+        sent_by.values()
+    )
 
 
 @pytest.mark.django_db
@@ -84,6 +145,7 @@ def test_presence_stands_down(pair):
 @pytest.mark.django_db
 def test_cap_resets_only_on_same_sender_human(pair):
     p, c, chat = pair
+    _set_cap(p, 1)
     inbound = _inbound(chat.id, c.id)
     assert _commit(chat, p, c, inbound["id"])["status"] == "sent"
     assert svc.reply_cap_reached(chat.id, p.id) is True
@@ -101,7 +163,7 @@ def test_cap_resets_only_on_same_sender_human(pair):
 def test_escalate_sets_status_and_notifies_without_posting(pair):
     p, c, chat = pair
     n_before = Message.objects.filter(chat_id=chat.id).count()
-    res = svc.escalate(chat.id, p.id, "counterparty pressed again; agent already replied once")
+    res = svc.escalate(chat.id, p.id, "counterparty pressed again; agent already at reply cap")
     assert res["status"] == "escalated"
 
     chat.refresh_from_db()
@@ -132,6 +194,29 @@ def test_qualify_notifies_both_parties(pair):
     # Counterparty gets an inbound_message notification; the principal gets the qualify flag.
     assert Notification.objects.filter(user=c, type="inbound_message", chat_id=chat.id).exists()
     assert Notification.objects.filter(user=p, type="inbound_message", chat_id=chat.id).exists()
+
+
+@pytest.mark.django_db
+def test_commit_writes_agent_action_log(pair):
+    """The away-agent's PRIVATE audit trail is written on commit; `private_rationale`
+    lands in the payload (owner-only) and never in the sent message body."""
+    from ai.models import AgentActionLog
+
+    p, c, chat = pair
+    inbound = _inbound(chat.id, c.id, "cash, close fast")
+    _commit(
+        chat,
+        p,
+        c,
+        inbound["id"],
+        action="qualify",
+        body="looks like a fit — I'll flag it",
+        private_rationale="spread clears the fix-flip bar",
+    )
+    row = AgentActionLog.objects.filter(principal=p, chat=chat, action_type="sent").first()
+    assert row is not None
+    assert row.payload.get("private_rationale") == "spread clears the fix-flip bar"
+    assert row.payload.get("action") == "qualify"
 
 
 @pytest.mark.django_db

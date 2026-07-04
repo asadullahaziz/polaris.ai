@@ -98,11 +98,16 @@ class UserProfile(models.Model):
     #   agent_instructions   — global free-text guidance injected into BOTH the
     #                          copilot and the away-responder prompts, layered
     #                          UNDER per-deal Mandate.instructions.
+    #   agent_reply_cap      — max away-agent replies (sender=this user) since this
+    #                          user's last human message, before the agent escalates
+    #                          instead. Bounds the agent↔agent away-cover loop; read
+    #                          as the default `n` in `reply_cap_reached` (P4).
     auto_reply_when_away = models.BooleanField(default=False)
     agent_autonomy = models.CharField(
         max_length=32, default="draft_for_approval", choices=AUTONOMY_CHOICES
     )
     agent_instructions = models.TextField(blank=True, default="")
+    agent_reply_cap = models.PositiveSmallIntegerField(default=3)
 
     updated_at = models.DateTimeField(auto_now=True)
 

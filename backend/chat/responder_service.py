@@ -16,11 +16,18 @@ the guarantee (architecture §5):
      `dedup_key` → the insert is a silent no-op → never a second message.
 
 **Sender-based cap (2-party ⇒ unambiguous):** "agent messages with `sender=principal`
-since the last human message with `sender=principal` < N=1." The **principal is the
-OTHER member** (the human the agent covers for). Human takeover needs no special code:
-the principal's own next human message zeroes the count (its `sender` matches); the
+since the last human message with `sender=principal` < N." The **principal is the OTHER
+member** (the human the agent covers for). Human takeover needs no special code: the
+principal's own next human message zeroes the count (its `sender` matches); the
 counterparty's messages never reset it (different `sender`) — the other side can't farm
 extra replies. `author_side` is gone entirely.
+
+**N is per-user (revisions 2026-07-04):** `UserProfile.agent_reply_cap` (default 3),
+resolved from the **principal's** profile. This bounds the agent↔agent away-cover loop:
+after an agent reply is sent, the handler re-arms the counterparty's away-agent, so both
+sides converse until each hits *its own* cap, then the next inbound-while-away escalates.
+If a human never speaks, "last same-side human" is absent ⇒ the cap counts all-time agent
+messages against a fixed N → guaranteed termination at ≈ 2N agent turns.
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ from django.utils import timezone
 
 log = logging.getLogger(__name__)
 
-REPLY_CAP = 1  # N in "principal's agent replies since last principal human < N" (§5)
+DEFAULT_REPLY_CAP = 3  # fallback N when the principal has no profile (revisions 2026-07-04)
 
 
 def dedup_key(chat_id: int, inbound_message_id: int) -> str:
@@ -49,12 +56,26 @@ def _default_present(chat_id: int, user_id: int | None) -> bool:
     return is_present_sync(chat_id, user_id)
 
 
-def reply_cap_reached(chat_id: int, principal_id: int, *, n: int = REPLY_CAP) -> bool:
+def _principal_cap(principal_id: int) -> int:
+    """The principal's own reply cap (`UserProfile.agent_reply_cap`), or the default if
+    they have no profile — so `commit_reply`'s internal check and the handler's early
+    re-check both read the same per-user value."""
+    from users.models import UserProfile
+
+    row = UserProfile.objects.filter(user_id=principal_id).values("agent_reply_cap").first()
+    return (row or {}).get("agent_reply_cap") or DEFAULT_REPLY_CAP
+
+
+def reply_cap_reached(chat_id: int, principal_id: int, *, n: int | None = None) -> bool:
     """Has the principal's agent already replied `n` times since the principal's last
-    human message? The cap is a QUERY, not a stored flag — recomputed fresh (and inside
-    the commit txn) so it's correct under retries and concurrency. The counterparty's
-    messages don't reset it."""
+    human message? `n=None` resolves the principal's own `agent_reply_cap` (default 3).
+    The cap is a QUERY, not a stored flag — recomputed fresh (and inside the commit txn)
+    so it's correct under retries and concurrency. The counterparty's messages don't reset
+    it (their `sender` differs)."""
     from .models import Message
+
+    if n is None:
+        n = _principal_cap(principal_id)
 
     last_human_id = (
         Message.objects.filter(
@@ -81,12 +102,12 @@ def log_action(
     private_rationale: str | None = None,
     payload: dict | None = None,
 ) -> None:
-    """Append-only audit (the away-agent's private reasoning trail). **Deferred to P4**:
-    the `ai.AgentActionLog` model + its `chat` FK land with the responder graph (deferral
-    ledger). Lazy import ⇒ a clean no-op until then, so the commit gate is complete and
-    testable now without a dangling table."""
+    """Append-only audit (the away-agent's private reasoning trail) → `ai.AgentActionLog`
+    (added P4). `private_rationale` is folded into `payload` and is owner-only — it never
+    crosses the disclosure boundary. The lazy import stays a defensive no-op if the `ai`
+    app is ever unavailable, so the commit gate never fails on the audit write."""
     try:
-        from ai.models import AgentActionLog  # present from P4
+        from ai.models import AgentActionLog
     except ImportError:
         return
     body = dict(payload or {})
