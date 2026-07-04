@@ -1,54 +1,127 @@
 """
-Listing REST (implementation_plan P1.2): the user's own listings, intake, an
-on-demand valuation, and the per-listing mandate — the same mandate the agent's
-`set_mandate` / `check_mandate` tools read/write (shared context store).
+catalog REST — property dedup lookup + the user's own listings (multi-property
+create, detail, on-demand valuation/comps, and the per-listing deal mandate).
+
+Views are thin: they validate and delegate to `catalog.services` (the same seam
+the P2 copilot tools call), so the agent and the API stay in lockstep.
 """
 
 from __future__ import annotations
 
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from agent_context.serializers import MandateSerializer
-from matching.engine import estimate_value, get_comps
-from polaris_agent import dal
+from matching.engine import estimate_value, get_comps, rank_buyers_for_attrs
 
+from . import services
 from .models import Listing
-from .serializers import ListingIntakeSerializer, ListingSerializer
+from .serializers import (
+    BuyBoxWriteSerializer,
+    ListingCreateSerializer,
+    ListingDetailSerializer,
+    ListingSummarySerializer,
+    ListingUpdateSerializer,
+    MandateSerializer,
+)
+
+
+class PropertyLookupView(APIView):
+    """GET /api/properties/lookup?address=… → fetch-existing dedup (read-only)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        address = request.query_params.get("address", "")
+        return Response(services.lookup_property(address))
+
+
+def _num(value, cast):
+    try:
+        return cast(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+class BuyerRankView(APIView):
+    """GET /api/buyers/rank?address=…&price=…&beds=…&sqft=…&condition=…&property_type=…
+    &limit=… — the `/buyers` ad-hoc matcher (no listing persisted). Delegates to the SAME
+    engine entry point the copilot's `find_buyers` tool uses (agent == API): address→geo
+    via the known Property universe (no geocoder), then `rank_buyers_for_attrs`. An
+    unresolvable address degrades to `ranked: []` with `resolved: false`, not an error."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        address = (request.query_params.get("address") or "").strip()
+        if not address:
+            return Response({"detail": "address required"}, status=400)
+        q = request.query_params
+        geom = services.resolve_geo(address)
+        result = rank_buyers_for_attrs(
+            geom=geom,
+            price=_num(q.get("price"), float),
+            condition=_num(q.get("condition"), int),
+            beds=_num(q.get("beds"), int),
+            sqft=_num(q.get("sqft"), int),
+            property_type=q.get("property_type") or None,
+            seller_id=request.user.id,
+            limit=_num(q.get("limit"), int) or 10,
+        )
+        result["resolved"] = geom is not None
+        return Response(result)
 
 
 class ListingViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     mixins.CreateModelMixin,
+    mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
+    permission_classes = [IsAuthenticated]
+
     def get_queryset(self):
         return (
             Listing.objects.filter(seller=self.request.user)
             .order_by("-created_at")
-            .prefetch_related("listingproperty_set__property")
+            .prefetch_related("listingproperty_set__property", "media")
         )
 
     def get_serializer_class(self):
-        return ListingIntakeSerializer if self.action == "create" else ListingSerializer
+        if self.action == "list":
+            return ListingSummarySerializer
+        if self.action == "create":
+            return ListingCreateSerializer
+        if self.action in ("update", "partial_update"):
+            return ListingUpdateSerializer
+        return ListingDetailSerializer
 
     def create(self, request, *args, **kwargs):
-        ser = ListingIntakeSerializer(data=request.data)
+        ser = ListingCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        res = dal._create_listing_from_fields(request.user.id, ser.validated_data)
-        listing = self.get_queryset().get(id=res["listing_id"])
-        return Response(ListingSerializer(listing).data, status=201)
+        listing = services.create_listing(request.user, ser.validated_data)
+        detail = self.get_queryset().get(id=listing.id)
+        return Response(ListingDetailSerializer(detail).data, status=201)
 
-    def _property(self, listing):
-        lp = listing.listingproperty_set.first()
+    def update(self, request, *args, **kwargs):
+        listing = self.get_object()  # 404s if not owned
+        ser = ListingUpdateSerializer(data=request.data, partial=kwargs.get("partial", False))
+        ser.is_valid(raise_exception=True)
+        services.update_listing(listing, ser.validated_data)
+        detail = self.get_queryset().get(id=listing.id)
+        return Response(ListingDetailSerializer(detail).data)
+
+    def _first_property(self, listing):
+        lp = listing.listingproperty_set.select_related("property").order_by("sort_order").first()
         return lp.property if lp else None
 
     @action(detail=True, methods=["get"])
     def valuation(self, request, pk=None):
         """On-demand market value + comps for the listing (arv=1 for after-repair)."""
-        prop = self._property(self.get_object())
+        prop = self._first_property(self.get_object())
         if prop is None:
             return Response({"detail": "listing has no property"}, status=400)
         arv = request.query_params.get("arv") in ("1", "true", "True")
@@ -58,7 +131,7 @@ class ListingViewSet(
 
     @action(detail=True, methods=["get"])
     def comps(self, request, pk=None):
-        prop = self._property(self.get_object())
+        prop = self._first_property(self.get_object())
         if prop is None:
             return Response({"detail": "listing has no property"}, status=400)
         return Response(get_comps(prop))
@@ -67,9 +140,42 @@ class ListingViewSet(
     def mandate(self, request, pk=None):
         listing = self.get_object()  # 404s if not owned
         if request.method == "GET":
-            return Response(dal._get_mandate_for_listing(listing.id, request.user.id))
+            return Response(services.get_mandate_for_listing(listing))
         ser = MandateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        return Response(
-            dal._set_mandate_for_listing(listing.id, request.user.id, ser.validated_data)
-        )
+        return Response(services.set_mandate_for_listing(listing, ser.validated_data))
+
+
+class BuyBoxViewSet(viewsets.ViewSet):
+    """The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
+    Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+    copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
+    a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
+    id returns an error dict → 404)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        return Response(services.list_buy_boxes(request.user.id))
+
+    def retrieve(self, request, pk=None):
+        result = services.get_buy_box(request.user.id, int(pk))
+        return Response(result, status=404 if "error" in result else 200)
+
+    def create(self, request):
+        ser = BuyBoxWriteSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        return Response(services.create_buy_box(request.user.id, ser.validated_data), status=201)
+
+    def update(self, request, pk=None):
+        ser = BuyBoxWriteSerializer(data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        result = services.update_buy_box(request.user.id, int(pk), ser.validated_data)
+        return Response(result, status=404 if "error" in result else 200)
+
+    def partial_update(self, request, pk=None):
+        return self.update(request, pk=pk)
+
+    def destroy(self, request, pk=None):
+        result = services.delete_buy_box(request.user.id, int(pk))
+        return Response(result, status=404 if "error" in result else 200)

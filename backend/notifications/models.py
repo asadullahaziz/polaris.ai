@@ -1,9 +1,10 @@
 """
-notifications — notification (data_model_decisions Decision 7).
+notifications — the in-app notification feed (data_model_decisions Decision 7).
 
-In-app only (no email/SMS). One table covers all four triggers: new inbound
-message, new outreach received, an agent action awaiting approval, and an
-escalation / handback.
+In-app only (no email/SMS). One table covers all four triggers: a new inbound
+message, a new outreach received, an agent action awaiting approval, and an
+escalation / handback. v2 rewire: the `conversation` FK now targets `chat.Chat`
+(the human 1:1 chat) instead of the fused v1 conversation table.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ class Notification(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications"
     )
     type = models.TextField(choices=NOTIFICATION_TYPES)
-    conversation = models.ForeignKey(
-        "conversations.Conversation",
+    chat = models.ForeignKey(
+        "chat.Chat",
         on_delete=models.CASCADE,
         null=True,
         blank=True,

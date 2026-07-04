@@ -1,7 +1,7 @@
 """
-Notifications REST (implementation_plan P3.9): the in-app notification feed the UI
-polls, plus mark-read. In-app only (no email/SMS) — one table, four trigger types
-(inbound_message / outreach_received / approval_required / escalation).
+Notifications REST (P3) — the in-app notification feed the UI polls, plus mark-read.
+In-app only (no email/SMS); one table, four trigger types (inbound_message /
+outreach_received / approval_required / escalation).
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = NotificationSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):  # drf-spectacular introspection
+            return Notification.objects.none()
         return Notification.objects.filter(user=self.request.user).order_by("-created_at")
 
     def list(self, request, *args, **kwargs):

@@ -1,0 +1,11 @@
+"""Ai websocket routes — the streamed copilot chat (Graph 1). Aggregated by config.routing."""
+
+from __future__ import annotations
+
+from django.urls import path
+
+from .consumers import CopilotConsumer
+
+websocket_urlpatterns = [
+    path("ws/copilot/", CopilotConsumer.as_asgi()),
+]

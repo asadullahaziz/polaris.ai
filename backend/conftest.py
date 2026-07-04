@@ -1,8 +1,19 @@
-"""Shared pytest fixtures for the P0 spike tests."""
+"""Shared pytest fixtures."""
 
 from __future__ import annotations
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    """Clear the (locmem) cache before each test so DRF scoped throttles don't
+    bleed request counts across tests in a single run."""
+    from django.core.cache import cache
+
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture

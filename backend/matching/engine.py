@@ -1,25 +1,23 @@
 """
-Deterministic comping / valuation engine (matching_and_data §3, implementation_plan P1.5).
+Deterministic comping / valuation / ranking engine (matching_and_data §2–3).
 
-"The engine scores, the LLM narrates." This module is pure SQL/PostGIS/Python — no
-model calls — so it is reproducible, explainable, and unit-testable without an LLM.
-`polaris_agent` only *wraps* these as tools and narrates the breakdown.
+"The engine scores, the LLM narrates." Pure SQL/PostGIS/Python — no model calls —
+so it is reproducible, explainable, and unit-testable without an LLM. `polaris_agent`
+only *wraps* these as tools and narrates the breakdown.
 
 Public API:
-  * get_comps(subject, ...)       → nearest recent similar SOLD properties, with a
-                                     staged fallback that records how far it relaxed.
-  * estimate_value(subject, ...)  → a value range from comp $/sqft; `arv=True` comps
-                                     against good-condition sales (the after-repair view).
-  * rank_buyers(listing_id, ...)  → the buyer-matching engine (P2.1, matching_and_data §2):
-                                     behavioral-first weighted score + per-feature breakdown
-                                     the LLM narrates as "why this buyer." No LLM here.
-  * assess_deal(listing_id, ...)  → the buyer auto-responder's wholesale math (P3.4,
-                                     matching_and_data §3): spread/margin vs the buyer's
-                                     strategy threshold → qualify/hold/decline verdict +
-                                     rationale, feeding Stage 1 (architecture §5). No LLM.
+  * get_comps(subject, ...)          → nearest recent similar SOLD properties, staged fallback.
+  * estimate_value(subject, ...)     → a value range from comp $/sqft (`arv=True` = after-repair).
+  * rank_buyers(listing_id, ...)     → the buyer-matching engine over a persisted listing.
+  * rank_buyers_for_attrs(...)       → the SAME engine over ad-hoc attrs (the `/buyers` matcher):
+                                       address→geo + price (+ optional condition/beds/sqft),
+                                       no `Listing` persisted.
+  * assess_deal(listing_id, ...)     → the away-responder's wholesale math → qualify/hold/decline.
 
+v2 rewire: registered **users only** (no prospects); `Sale`/`BuyBox` live in `catalog`;
+`_relationships` reads chat pairs (inert — returns empty — until the `chat` app lands in P3).
 `subject` is a `catalog.Property` or a dict of {geom, beds, sqft, grade, waterfront,
-condition, pk} — so it works on a saved listing OR freshly-extracted attributes.
+condition, pk} — so it works on a saved property OR freshly-extracted attributes.
 """
 
 from __future__ import annotations
@@ -195,12 +193,12 @@ def estimate_value(subject, *, arv: bool = False, min_n: int = 5) -> dict:
 
 
 # =====================================================================================
-# Buyer ranking (P2.1, matching_and_data §2) — deterministic + explainable.
+# Buyer ranking (matching_and_data §2) — deterministic + explainable.
 #
 # "The engine scores, the LLM narrates." score = Σ (weight × normalized_feature). The
 # behavioral features (geo + price + strategy + recency + volume = 0.83) dominate, so
-# the engine is behavioral-first and degrades gracefully for prospects (who have no
-# buy-box). Buy-box completeness is a registered-only bonus/tie-breaker.
+# the engine is behavioral-first; buy-box completeness is a bonus/tie-breaker that
+# applies whenever the buyer has a box (v2: every candidate is a registered user).
 # =====================================================================================
 
 RANK_WEIGHTS = {
@@ -210,9 +208,9 @@ RANK_WEIGHTS = {
     "recency": 0.12,  # exp-decay on months since the last buy
     "volume": 0.10,  # log-scaled purchase count
     "cash": 0.07,  # cash buyers close
-    "relationship": 0.10,  # warm > cold (prior thread/deal with THIS seller)
+    "relationship": 0.10,  # warm > cold (prior chat/deal with THIS seller)
 }
-BUY_BOX_BONUS = 0.05  # registered-only tie-breaker on top of the Σ=1.0 base
+BUY_BOX_BONUS = 0.05  # tie-breaker on top of the Σ=1.0 base (0 without a box)
 
 # Condition bands (KC 1–5) each strategy targets — grounds "strategy fit" in real data.
 _FLIP_CONDITIONS = {1, 2, 3}  # fix_flip / brrrr want value-add
@@ -264,20 +262,22 @@ def _dominant_strategy(dispositions: list[str], box_strategy: str | None) -> str
     return box_strategy
 
 
-def _completeness(box, prop, price) -> float:
+def _completeness(box, attrs: dict, price) -> float:
+    """Fraction of the buy-box's set criteria the subject meets (registered bonus)."""
     if box is None:
         return 0.0
     checks: list[bool] = []
+    beds, sqft, ptype = attrs.get("beds"), attrs.get("sqft"), attrs.get("property_type")
     if box.beds_min is not None:
-        checks.append(prop.beds is not None and prop.beds >= box.beds_min)
+        checks.append(beds is not None and beds >= box.beds_min)
     if box.sqft_min is not None:
-        checks.append(prop.sqft is not None and prop.sqft >= box.sqft_min)
+        checks.append(sqft is not None and sqft >= box.sqft_min)
     if box.price_min is not None and price is not None:
         checks.append(price >= float(box.price_min))
     if box.price_max is not None and price is not None:
         checks.append(price <= float(box.price_max))
     if box.property_types:
-        checks.append(prop.property_type in box.property_types)
+        checks.append(ptype in box.property_types)
     return sum(1 for c in checks if c) / len(checks) if checks else 0.0
 
 
@@ -309,15 +309,19 @@ def _reason(feats: dict, ctx: dict) -> str:
 
 
 def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> dict:
-    """Rank likely buyers for a listing. Candidate pool = registered buyers (covering
-    buy-box or nearby history) + prospects (nearby history). Behavioral-first weighted
-    score with a per-feature breakdown for narration. Deterministic."""
+    """Rank likely buyers for a persisted listing. Resolves the listing's first
+    property (geo/price/condition), then delegates to the shared pool ranker."""
     from catalog.models import Listing, ListingProperty
 
     listing = Listing.objects.filter(id=listing_id).select_related("seller").first()
     if listing is None:
         return {"error": f"listing {listing_id} not found", "ranked": []}
-    lp = ListingProperty.objects.filter(listing_id=listing_id).select_related("property").first()
+    lp = (
+        ListingProperty.objects.filter(listing_id=listing_id)
+        .select_related("property")
+        .order_by("sort_order")
+        .first()
+    )
     prop = lp.property if lp else None
     if prop is None or prop.geom is None:
         return {
@@ -326,60 +330,90 @@ def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> 
             "note": "listing has no geolocated property",
         }
 
-    geom = prop.geom
     price = (
         float(listing.asking_price)
         if listing.asking_price is not None
         else (float(prop.last_sale_price) if prop.last_sale_price is not None else None)
     )
+    result = _rank_pool(
+        geom=prop.geom,
+        price=price,
+        attrs={
+            "condition": prop.condition,
+            "beds": prop.beds,
+            "sqft": prop.sqft,
+            "property_type": prop.property_type,
+        },
+        seller_id=listing.seller_id,
+        limit=limit,
+        radius_mi=radius_mi,
+    )
+    result["listing_id"] = listing_id
+    return result
+
+
+def rank_buyers_for_attrs(
+    *,
+    geom,
+    price: float | None = None,
+    condition: int | None = None,
+    beds: int | None = None,
+    sqft: int | None = None,
+    property_type: str | None = None,
+    seller_id: int | None = None,
+    limit: int = 10,
+    radius_mi: float = 5.0,
+) -> dict:
+    """Ad-hoc ranking for the `/buyers` matcher — no persisted listing. `geom` is a
+    resolved point (address→geo is the caller's job, e.g. catalog.services.resolve_geo).
+    Without `geom` there is no geo signal and ranking degrades to price/strategy/history."""
+    if geom is None:
+        return {"ranked": [], "n_candidates": 0, "weights": RANK_WEIGHTS, "note": "no geo"}
+    return _rank_pool(
+        geom=geom,
+        price=price,
+        attrs={
+            "condition": condition,
+            "beds": beds,
+            "sqft": sqft,
+            "property_type": property_type,
+        },
+        seller_id=seller_id,
+        limit=limit,
+        radius_mi=radius_mi,
+    )
+
+
+def _rank_pool(*, geom, price, attrs: dict, seller_id, limit: int, radius_mi: float) -> dict:
+    """The shared core: build the candidate pool, load signals, score, sort. Deterministic."""
     today = timezone.now().date()
 
-    user_ids, prospect_ids = _candidate_pool(geom, radius_mi)
-    if not user_ids and not prospect_ids:
-        return {"listing_id": listing_id, "ranked": [], "n_candidates": 0, "weights": RANK_WEIGHTS}
+    user_ids = _candidate_pool(geom, radius_mi)
+    if not user_ids:
+        return {"ranked": [], "n_candidates": 0, "radius_mi": radius_mi, "weights": RANK_WEIGHTS}
 
-    per_user, per_prospect = _load_purchases(user_ids, prospect_ids, geom, radius_mi)
+    per_user = _load_sales(user_ids, geom, radius_mi)
     boxes = _load_boxes(user_ids)
-    rel_users, rel_prospects = _relationships(listing.seller_id, user_ids, prospect_ids)
-    names_u, names_p, prospect_cash = _load_names(user_ids, prospect_ids)
+    related = _relationships(seller_id, user_ids)
+    names = _load_names(user_ids)
 
-    ranked: list[dict] = []
-    for uid in user_ids:
-        ranked.append(
-            _score_candidate(
-                key=("user", uid),
-                name=names_u.get(uid, f"Buyer {uid}"),
-                registered=True,
-                purchases=per_user.get(uid, []),
-                box=boxes.get(uid),
-                related=uid in rel_users,
-                prop=prop,
-                price=price,
-                today=today,
-                radius_mi=radius_mi,
-            )
+    ranked = [
+        _score_candidate(
+            user_id=uid,
+            name=names.get(uid, f"Buyer {uid}"),
+            sales=per_user.get(uid, []),
+            box=boxes.get(uid),
+            related=uid in related,
+            attrs=attrs,
+            price=price,
+            today=today,
+            radius_mi=radius_mi,
         )
-    for pid in prospect_ids:
-        ranked.append(
-            _score_candidate(
-                key=("prospect", pid),
-                name=names_p.get(pid, f"Prospect {pid}"),
-                registered=False,
-                purchases=per_prospect.get(pid, []),
-                box=None,
-                related=pid in rel_prospects,
-                prop=prop,
-                price=price,
-                today=today,
-                radius_mi=radius_mi,
-                prospect_cash=prospect_cash.get(pid),
-            )
-        )
-
-    # Sort by score desc; name asc as a stable, deterministic tie-break.
-    ranked.sort(key=lambda r: (-r["score"], r["name"]))
+        for uid in user_ids
+    ]
+    # Sort by score desc; name asc then user_id asc as a stable, deterministic tie-break.
+    ranked.sort(key=lambda r: (-r["score"], r["name"], r["user_id"]))
     return {
-        "listing_id": listing_id,
         "n_candidates": len(ranked),
         "radius_mi": radius_mi,
         "weights": RANK_WEIGHTS,
@@ -387,19 +421,14 @@ def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> 
     }
 
 
-def _candidate_pool(geom, radius_mi: float) -> tuple[set[int], set[int]]:
-    from buyers.models import BuyBoxGeo, Purchase
+def _candidate_pool(geom, radius_mi: float) -> set[int]:
+    from catalog.models import BuyBoxGeo, Sale
 
     user_ids: set[int] = set()
-    prospect_ids: set[int] = set()
-    for row in Purchase.objects.filter(geom__dwithin=(geom, D(mi=radius_mi))).values(
-        "buyer_user_id", "buyer_prospect_id"
-    ):
-        if row["buyer_user_id"]:
-            user_ids.add(row["buyer_user_id"])
-        if row["buyer_prospect_id"]:
-            prospect_ids.add(row["buyer_prospect_id"])
-    # Registered buyers whose radius buy-box covers the listing (even with no nearby buy).
+    for row in Sale.objects.filter(geom__dwithin=(geom, D(mi=radius_mi))).values("buyer_id"):
+        if row["buyer_id"]:
+            user_ids.add(row["buyer_id"])
+    # Registered buyers whose radius buy-box covers the area (even with no nearby buy).
     for g in (
         BuyBoxGeo.objects.filter(geo_type="radius", center__isnull=False, buy_box__is_active=True)
         .annotate(d=Distance("center", geom))
@@ -411,50 +440,35 @@ def _candidate_pool(geom, radius_mi: float) -> tuple[set[int], set[int]]:
             and g.d.m <= float(g.radius_mi) * _METERS_PER_MILE
         ):
             user_ids.add(g.buy_box.buyer_id)
-    return user_ids, prospect_ids
+    return user_ids
 
 
-def _load_purchases(user_ids, prospect_ids, geom, radius_mi):
-    from django.db.models import Q
-
-    from buyers.models import Purchase
+def _load_sales(user_ids, geom, radius_mi):
+    from catalog.models import Sale
 
     per_user: dict[int, list[dict]] = defaultdict(list)
-    per_prospect: dict[int, list[dict]] = defaultdict(list)
     threshold_m = float(radius_mi) * _METERS_PER_MILE
     qs = (
-        Purchase.objects.filter(
-            Q(buyer_user_id__in=user_ids) | Q(buyer_prospect_id__in=prospect_ids)
-        )
+        Sale.objects.filter(buyer_id__in=user_ids)
         .annotate(dist=Distance("geom", geom))
-        .values(
-            "buyer_user_id",
-            "buyer_prospect_id",
-            "price",
-            "purchased_at",
-            "cash_buyer",
-            "disposition",
-            "dist",
-        )
+        .values("buyer_id", "price", "purchased_at", "cash_buyer", "disposition", "dist")
     )
     for r in qs:
         dist_m = r["dist"].m if r["dist"] is not None else None
-        rec = {
-            "price": float(r["price"]) if r["price"] is not None else None,
-            "purchased_at": r["purchased_at"],
-            "cash_buyer": r["cash_buyer"],
-            "disposition": r["disposition"],
-            "near": dist_m is not None and dist_m <= threshold_m,
-        }
-        if r["buyer_user_id"]:
-            per_user[r["buyer_user_id"]].append(rec)
-        elif r["buyer_prospect_id"]:
-            per_prospect[r["buyer_prospect_id"]].append(rec)
-    return per_user, per_prospect
+        per_user[r["buyer_id"]].append(
+            {
+                "price": float(r["price"]) if r["price"] is not None else None,
+                "purchased_at": r["purchased_at"],
+                "cash_buyer": r["cash_buyer"],
+                "disposition": r["disposition"],
+                "near": dist_m is not None and dist_m <= threshold_m,
+            }
+        )
+    return per_user
 
 
 def _load_boxes(user_ids):
-    from buyers.models import BuyBox
+    from catalog.models import BuyBox
 
     boxes: dict[int, object] = {}
     for b in BuyBox.objects.filter(buyer_id__in=user_ids, is_active=True).order_by("-is_primary"):
@@ -462,85 +476,63 @@ def _load_boxes(user_ids):
     return boxes
 
 
-def _relationships(seller_id, user_ids, prospect_ids):
-    from conversations.models import Conversation
+def _relationships(seller_id, user_ids) -> set[int]:
+    """Registered buyers with an existing chat pairing to this seller (the 0.10
+    'warm' signal). Pair-based (P3): a `Chat` exists whose two `ChatMember` rows are
+    {seller_id, candidate}. Scoring math unchanged — this just turns the weight live."""
+    if seller_id is None or not user_ids:
+        return set()
+    from chat.models import ChatMember
 
-    base = Conversation.objects.filter(kind="thread", listing__seller_id=seller_id)
-    rel_users = set(
-        base.filter(counterparty_user_id__in=user_ids).values_list(
-            "counterparty_user_id", flat=True
-        )
+    seller_chat_ids = ChatMember.objects.filter(user_id=seller_id).values_list(
+        "chat_id", flat=True
     )
-    rel_prospects = set(
-        base.filter(counterparty_prospect_id__in=prospect_ids).values_list(
-            "counterparty_prospect_id", flat=True
-        )
+    if not seller_chat_ids:
+        return set()
+    return set(
+        ChatMember.objects.filter(chat_id__in=list(seller_chat_ids), user_id__in=user_ids)
+        .exclude(user_id=seller_id)
+        .values_list("user_id", flat=True)
     )
-    return rel_users, rel_prospects
 
 
-def _load_names(user_ids, prospect_ids):
+def _load_names(user_ids):
     from django.contrib.auth import get_user_model
 
-    from buyers.models import Prospect
-
-    names_u = {}
-    for u in get_user_model().objects.filter(id__in=user_ids).values("id", "full_name", "username"):
-        names_u[u["id"]] = u["full_name"] or u["username"]
-    names_p, prospect_cash = {}, {}
-    for p in Prospect.objects.filter(id__in=prospect_ids).values(
-        "id", "full_name", "entity_name", "cash_buyer"
-    ):
-        names_p[p["id"]] = p["full_name"] or p["entity_name"] or f"Prospect {p['id']}"
-        prospect_cash[p["id"]] = p["cash_buyer"]
-    return names_u, names_p, prospect_cash
+    names = {}
+    for u in get_user_model().objects.filter(id__in=user_ids).values("id", "full_name", "email"):
+        names[u["id"]] = u["full_name"] or u["email"]
+    return names
 
 
-def _score_candidate(
-    *,
-    key,
-    name,
-    registered,
-    purchases,
-    box,
-    related,
-    prop,
-    price,
-    today,
-    radius_mi,
-    prospect_cash=None,
-) -> dict:
-    n_total = len(purchases)
-    n_near = sum(1 for p in purchases if p["near"])
-    dates = [p["purchased_at"] for p in purchases if p["purchased_at"]]
+def _score_candidate(*, user_id, name, sales, box, related, attrs, price, today, radius_mi) -> dict:
+    n_total = len(sales)
+    n_near = sum(1 for p in sales if p["near"])
+    dates = [p["purchased_at"] for p in sales if p["purchased_at"]]
     months = round((today - max(dates)).days / 30.44) if dates else None
-    cash_votes = [p["cash_buyer"] for p in purchases if p["cash_buyer"] is not None]
-    is_cash = (
-        (sum(1 for c in cash_votes if c) / len(cash_votes) >= 0.5)
-        if cash_votes
-        else bool(prospect_cash)
-    )
-    p_prices = [p["price"] for p in purchases if p["price"] is not None]
+    cash_votes = [p["cash_buyer"] for p in sales if p["cash_buyer"] is not None]
+    is_cash = (sum(1 for c in cash_votes if c) / len(cash_votes) >= 0.5) if cash_votes else False
+    p_prices = [p["price"] for p in sales if p["price"] is not None]
     hist_lo, hist_hi = (min(p_prices), max(p_prices)) if p_prices else (None, None)
     if hist_lo is None and box is not None:
         hist_lo = float(box.price_min) if box.price_min is not None else None
         hist_hi = float(box.price_max) if box.price_max is not None else None
     strategy = _dominant_strategy(
-        [p["disposition"] for p in purchases if p["disposition"]],
+        [p["disposition"] for p in sales if p["disposition"]],
         getattr(box, "strategy", None),
     )
 
     feats = {
         "bought_in_area": _bought_in_area(n_near),
         "price_band": _price_band_fit(price, hist_lo, hist_hi),
-        "strategy": _strategy_fit(strategy, prop.condition),
+        "strategy": _strategy_fit(strategy, attrs.get("condition")),
         "recency": _recency(months),
         "volume": _volume(n_total),
         "cash": 1.0 if is_cash else 0.3,
         "relationship": 1.0 if related else 0.0,
     }
     score = sum(RANK_WEIGHTS[k] * v for k, v in feats.items())
-    completeness = _completeness(box, prop, price) if registered else 0.0
+    completeness = _completeness(box, attrs, price)
     score += BUY_BOX_BONUS * completeness
 
     ctx = {
@@ -551,13 +543,9 @@ def _score_candidate(
         "strategy": strategy,
         "radius": radius_mi,
     }
-    kind, ident = key
     return {
-        "kind": kind,
-        "user_id": ident if kind == "user" else None,
-        "prospect_id": ident if kind == "prospect" else None,
+        "user_id": user_id,
         "name": name,
-        "registered": registered,
         "score": round(score, 4),
         "reason": _reason(feats, ctx),
         "features": {k: round(v, 3) for k, v in feats.items()},
@@ -569,10 +557,9 @@ def _score_candidate(
 
 
 # =====================================================================================
-# Deal assessment (P3.4, matching_and_data §3) — the buyer auto-responder's
-# qualify / hold / decline verdict. Deterministic wholesale math over the same comp
-# engine `estimate_value` uses, so Stage 1's decision is grounded, not vibes
-# (architecture §5). No LLM: the model narrates this verdict, it never computes it.
+# Deal assessment (matching_and_data §3) — the away-responder's qualify/hold/decline
+# verdict. Deterministic wholesale math over the same comp engine `estimate_value` uses,
+# so Stage 1's decision is grounded, not vibes. No LLM: the model narrates, never computes.
 # =====================================================================================
 
 # Rehab $/sqft by KC condition (1=full gut … 5=turnkey): a value-add deal costs more
@@ -612,7 +599,12 @@ def assess_deal(listing_id: int, *, strategy: str | None = None, min_n: int = 5)
     listing = Listing.objects.filter(id=listing_id).first()
     if listing is None:
         return {"verdict": "hold", "error": f"listing {listing_id} not found"}
-    lp = ListingProperty.objects.filter(listing_id=listing_id).select_related("property").first()
+    lp = (
+        ListingProperty.objects.filter(listing_id=listing_id)
+        .select_related("property")
+        .order_by("sort_order")
+        .first()
+    )
     prop = lp.property if lp else None
     if prop is None:
         return {"verdict": "hold", "error": "listing has no property"}

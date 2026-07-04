@@ -1,320 +1,357 @@
 """
-P2 verification (implementation_plan Phase 2 "Verification") — all LLM-free.
+P5 — outreach ledger + fan-out (Graph 3), rewired to the v2 chat schema. LLM-free: the
+whole invariant core (`ai.outreach_service`) is pure/sync, so the ledger guarantee, opener
+idempotency, and the one-pair-chat + listing-attachment rewire are testable without the
+Inngest dev server. Plus the confirm-gate on the copilot's `launch_outreach` tool.
 
-The deterministic ranking engine, the delivery-ledger guarantee, the fan-out
-idempotency, and the launch→approve→send slice are exercised directly against the
-`matching.engine.rank_buyers` + `outreach.service` core. The live Inngest fan-out and
-the copilot narration/streaming are the browser/compose gate (like the P0 spike).
+Covered:
+  * launch → `awaiting_approval` + ranked recipients + a seller approval notification;
+  * send_recipient → opens the ONE pair `chat.Chat`, posts the opener as an agent message
+    with the listing attached, notifies the buyer, and returns the arming ids;
+  * the LEDGER GUARANTEE — a listing reaches each buyer at most once, ever (idempotent
+    replay + a second campaign skips-already-contacted);
+  * a second outreach to the same buyer reuses the same pair chat (accrues the listing);
+  * approve/cancel gates; dispatch-info / outcome / finish tallies;
+  * the copilot `launch_outreach` tool is confirm-gated and commits NOTHING on decline.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import uuid
 from decimal import Decimal
+from typing import TypedDict
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import Point
 from django.utils import timezone
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
-from buyers.models import BuyBox, BuyBoxGeo, Prospect, Purchase
-from catalog.models import Listing, ListingProperty, Property
-from conversations.models import Conversation, Message
-from matching.engine import rank_buyers
-from outreach import service
-from outreach.models import OutreachCampaign, OutreachRecipient
+from ai import outreach_service as svc
+from ai.models import OutreachCampaign, OutreachRecipient
+from catalog.models import Listing, ListingProperty, Property, Sale
+from chat.models import Chat, Message, MessageAttachment
+from notifications.models import Notification
+from polaris_agent.checkpointer import close_checkpointer, get_checkpointer
+from polaris_agent.tools.copilot import WRITE_TOOL_NAMES, copilot_tools
+from polaris_agent.tools.registry import tools_for
 
-# Downtown Seattle; buyers cluster within ~1mi, "far" cluster is out of range.
-LON, LAT = -122.335, 47.608
-FAR = (-120.0, 46.0)
-TODAY = timezone.now().date()
+User = get_user_model()
+
+GEO = Point(-122.330, 47.600, srid=4326)
 
 
-def _property(lon=LON, lat=LAT, *, beds=3, sqft=2000, condition=3, price="500000") -> Property:
-    return Property.objects.create(
-        county_fips="53033",
-        address_norm=f"t:{uuid.uuid4()}",
-        address_raw="123 Test Ave, Seattle, WA 98103",
-        geom=Point(lon, lat, srid=4326),
-        property_type="sfr",
-        beds=beds,
-        sqft=sqft,
-        grade=7,
-        condition=condition,
-        last_sale_price=Decimal(price),
-        last_sale_date=TODAY - dt.timedelta(days=30),
+def _user(email, **kw):
+    return User.objects.create_user(
+        email=email, password="pw-12345678", is_email_verified=True, **kw
     )
 
 
-def _listing(seller, *, asking="400000", **prop_kw) -> Listing:
-    prop = _property(**prop_kw)
-    lst = Listing.objects.create(seller=seller, asking_price=Decimal(asking), status="active")
-    ListingProperty.objects.create(listing=lst, property=prop, asking_price=Decimal(asking))
+def _listing(seller, *, apn="subj", address="123 Pike St", price="450000"):
+    """A seller listing over a geolocated property (so buyers can be ranked)."""
+    prop = Property.objects.create(
+        apn=apn,
+        county_fips="53033",
+        address_norm=f"norm:{apn}",
+        address_raw=address,
+        geom=GEO,
+        property_type="sfr",
+        beds=3,
+        sqft=2000,
+        condition=2,
+        last_sale_price=Decimal(price),
+        last_sale_date=timezone.now().date() - dt.timedelta(days=30),
+    )
+    lst = Listing.objects.create(
+        seller=seller, title="A home", asking_price=Decimal(price), status="active"
+    )
+    ListingProperty.objects.create(listing=lst, property=prop, asking_price=Decimal(price), sort_order=0)
     return lst
 
 
-def _seller(username="seller"):
-    return get_user_model().objects.create_user(username=username, password="x")
-
-
-def _purchase(*, user=None, prospect=None, lon=LON, lat=LAT, price="400000", months=3, cash=True):
-    return Purchase.objects.create(
-        buyer_user=user,
-        buyer_prospect=prospect,
-        geom=Point(lon, lat, srid=4326),
-        price=Decimal(price),
-        purchased_at=TODAY - dt.timedelta(days=int(months * 30)),
-        cash_buyer=cash,
+def _buyer_with_sale(email, *, name="Betty Buyer", days_ago=30):
+    """A buyer with a recent nearby cash purchase → lands in the candidate pool + ranks."""
+    buyer = _user(email, full_name=name)
+    Sale.objects.create(
+        buyer=buyer,
+        geom=GEO,
+        price=Decimal("440000"),
+        purchased_at=timezone.now().date() - dt.timedelta(days=days_ago),
+        cash_buyer=True,
         disposition="flip",
         source="test",
     )
+    return buyer
 
 
-def _registered_buyer(username, *, cover=True, n_purchases=0):
-    u = get_user_model().objects.create_user(
-        username=username, password="x", full_name=username.title()
-    )
-    box = BuyBox.objects.create(
-        buyer=u,
-        name=f"{username} box",
-        is_primary=True,
-        is_active=True,
-        source="manual",
-        strategy="fix_flip",
-        price_min=Decimal("300000"),
-        price_max=Decimal("500000"),
-        beds_min=2,
-        sqft_min=800,
-        property_types=["sfr"],
-    )
-    center = Point(LON, LAT, srid=4326) if cover else Point(*FAR, srid=4326)
-    BuyBoxGeo.objects.create(
-        buy_box=box, geo_type="radius", mode="include", center=center, radius_mi=Decimal("5.0")
-    )
-    for _ in range(n_purchases):
-        _purchase(user=u)
-    return u
+def _launch(seller, listing, **kw):
+    res = svc.launch_outreach(seller.id, listing.id, **kw)
+    return res
 
 
-def _prospect(name, *, n_purchases=1, lon=LON, lat=LAT):
-    p = Prospect.objects.create(full_name=name, source="test", cash_buyer=True)
-    for _ in range(n_purchases):
-        _purchase(prospect=p, lon=lon, lat=lat)
-    return p
-
-
-# ---------------------------------------------------------------------------
-# P2.1 — ranking: deterministic, behavioral-first, degrades for prospects
-# ---------------------------------------------------------------------------
+# --- launch: rank → draft → persist awaiting_approval --------------------------
 @pytest.mark.django_db
-def test_rank_buyers_orders_by_behavior_and_is_deterministic():
-    seller = _seller()
+def test_launch_persists_awaiting_approval_and_notifies():
+    seller = _user("seller@x.com")
     listing = _listing(seller)
+    buyer = _buyer_with_sale("buyer@x.com")
 
-    strong = _registered_buyer("strong", cover=True, n_purchases=5)  # nearby + covering box
-    _prospect("Mid Prospect", n_purchases=3)  # ranks on pure behavior
-    _prospect("Weak Prospect", n_purchases=1)
-    _registered_buyer("faraway", cover=False, n_purchases=0)  # out of pool
+    res = _launch(seller, listing)
+    assert res["campaign_id"] is not None
+    assert res["pending_count"] == 1
+    names = {r["name"] for r in res["ranked"]}
+    assert "Betty Buyer" in names
 
-    res = rank_buyers(listing.id, limit=10)
-    names = [r["name"] for r in res["ranked"]]
-
-    assert "Faraway" not in names  # neither nearby history nor covering buy-box
-    assert names[0] == strong.full_name  # most nearby buys + cash + completeness
-    assert names.index("Mid Prospect") < names.index("Weak Prospect")
-
-    # The behavioral signal is real, not incidental ordering.
-    top = res["ranked"][0]
-    assert top["n_nearby"] == 5 and top["features"]["bought_in_area"] > 0
-
-    # Prospects rank on pure behavior — no buy-box bonus.
-    mid_row = next(r for r in res["ranked"] if r["name"] == "Mid Prospect")
-    assert mid_row["registered"] is False
-    assert mid_row["buy_box_completeness"] == 0.0
-    assert mid_row["reason"]  # a human "why this buyer" line
-    assert set(res["weights"]) and "bought_in_area" in res["ranked"][0]["features"]
-
-    # Determinism: same inputs → identical order + scores.
-    again = rank_buyers(listing.id, limit=10)
-    assert [(r["name"], r["score"]) for r in again["ranked"]] == [
-        (r["name"], r["score"]) for r in res["ranked"]
-    ]
-
-
-@pytest.mark.django_db
-def test_rank_buyers_empty_pool_is_safe():
-    seller = _seller()
-    listing = _listing(seller)
-    res = rank_buyers(listing.id)
-    assert res["ranked"] == [] and res["n_candidates"] == 0
-
-
-# ---------------------------------------------------------------------------
-# P2.2 — launch persists a draft batch awaiting approval
-# ---------------------------------------------------------------------------
-@pytest.mark.django_db
-def test_launch_outreach_persists_awaiting_approval():
-    seller = _seller()
-    listing = _listing(seller)
-    _registered_buyer("b1", n_purchases=4)
-    _prospect("P1", n_purchases=2)
-
-    res = service.launch_outreach(seller.id, listing.id)
     campaign = OutreachCampaign.objects.get(id=res["campaign_id"])
     assert campaign.status == "awaiting_approval"
-    assert res["pending_count"] >= 2
-    recs = OutreachRecipient.objects.filter(campaign=campaign)
-    assert recs.count() == res["pending_count"] + res["skipped_count"]
-    assert all(r.draft_body and r.rank_reason for r in recs)  # openers drafted, reasons stored
+    rec = OutreachRecipient.objects.get(campaign=campaign, recipient_user=buyer)
+    assert rec.status == "pending"
+    assert rec.draft_body and "Betty" in rec.draft_body  # personalized opener drafted
+    assert rec.rank_score is not None
+
+    # Nothing sent yet — no chat, no message, but the seller has an approval notice.
+    assert Chat.objects.count() == 0
+    assert Notification.objects.filter(user=seller, type="approval_required").count() == 1
 
 
 @pytest.mark.django_db
-def test_launch_outreach_rejects_foreign_listing():
-    owner, intruder = _seller("owner"), _seller("intruder")
-    listing = _listing(owner)
-    assert "error" in service.launch_outreach(intruder.id, listing.id)
-
-
-# ---------------------------------------------------------------------------
-# P2.6 — the delivery-ledger guarantee
-# ---------------------------------------------------------------------------
-def _recipient(campaign, listing, *, user=None, prospect=None, status="pending"):
-    return OutreachRecipient.objects.create(
-        campaign=campaign,
-        listing=listing,
-        recipient_user=user,
-        recipient_prospect=prospect,
-        draft_body="hi",
-        rank_reason="bought nearby",
-        status=status,
-    )
-
-
-@pytest.mark.django_db
-def test_ledger_never_double_sends_across_campaigns():
-    seller = _seller()
+def test_launch_rejects_foreign_or_ungeocoded_listing():
+    seller = _user("seller@x.com")
+    other = _user("other@x.com")
     listing = _listing(seller)
-    buyer = _registered_buyer("b1", n_purchases=1)
+    # Not the caller's listing.
+    assert "error" in svc.launch_outreach(other.id, listing.id)
 
-    c1 = OutreachCampaign.objects.create(listing=listing, seller=seller, status="sending")
-    c2 = OutreachCampaign.objects.create(listing=listing, seller=seller, status="sending")
-    r1 = _recipient(c1, listing, user=buyer)
-    r2 = _recipient(c2, listing, user=buyer)
-
-    assert service.send_recipient(r1.id)["status"] == "sent"
-    assert service.send_recipient(r2.id)["status"] == "skipped"  # already contacted
-
-    sent = OutreachRecipient.objects.filter(listing=listing, recipient_user=buyer, status="sent")
-    assert sent.count() == 1  # the ledger guarantee
+    # A listing whose property has no geom cannot be ranked.
+    bare = Listing.objects.create(seller=seller, asking_price=Decimal("1"), status="active")
+    prop = Property.objects.create(address_norm="nogeo", address_raw="nowhere")
+    ListingProperty.objects.create(listing=bare, property=prop, sort_order=0)
+    assert "error" in svc.launch_outreach(seller.id, bare.id)
 
 
+# --- send: open the ONE pair chat + opener-as-attachment -----------------------
 @pytest.mark.django_db
-def test_cancelled_proposal_does_not_block_a_later_send():
-    seller = _seller()
+def test_send_recipient_opens_pair_chat_with_listing_attachment():
+    seller = _user("seller@x.com")
     listing = _listing(seller)
-    buyer = _registered_buyer("b1", n_purchases=1)
+    buyer = _buyer_with_sale("buyer@x.com")
 
-    c1 = OutreachCampaign.objects.create(listing=listing, seller=seller, status="cancelled")
-    _recipient(c1, listing, user=buyer, status="cancelled")  # a dead proposal
+    res = _launch(seller, listing)
+    svc.approve_campaign(seller.id, res["campaign_id"])
+    rec = OutreachRecipient.objects.get(campaign_id=res["campaign_id"], recipient_user=buyer)
 
-    c2 = OutreachCampaign.objects.create(listing=listing, seller=seller, status="sending")
-    r2 = _recipient(c2, listing, user=buyer)
-    assert service.send_recipient(r2.id)["status"] == "sent"  # cancelled didn't block
+    out = svc.send_recipient(rec.id)
+    assert out["status"] == "sent"
+    assert out["recipient_user_id"] == buyer.id
+    assert out["opener_message_id"] is not None
+
+    # Exactly one pair chat between seller & buyer.
+    chat = Chat.objects.get()
+    assert out["chat_id"] == chat.id
+    rec.refresh_from_db()
+    assert rec.status == "sent" and rec.chat_id == chat.id and rec.sent_at is not None
+
+    # The opener is an AGENT message sent on the seller's behalf, listing attached.
+    msg = Message.objects.get(id=out["opener_message_id"])
+    assert msg.kind == "agent" and msg.sender_id == seller.id
+    assert msg.action == "inform" and msg.status == "sent"
+    att = MessageAttachment.objects.get(message=msg)
+    assert att.kind == "listing" and att.listing_id == listing.id
+
+    # The buyer is notified.
+    assert Notification.objects.filter(user=buyer, type="outreach_received").count() == 1
 
 
-# ---------------------------------------------------------------------------
-# P2.4 — fan-out idempotency (replay sends each opener once)
-# ---------------------------------------------------------------------------
 @pytest.mark.django_db
 def test_send_recipient_is_idempotent_on_replay():
-    seller = _seller()
+    """Inngest is at-least-once → a replayed send must never double-post the opener or the
+    attachment, and the ledger row stays a single SENT."""
+    seller = _user("seller@x.com")
     listing = _listing(seller)
-    buyer = _registered_buyer("b1", n_purchases=1)
-    c = OutreachCampaign.objects.create(listing=listing, seller=seller, status="sending")
-    r = _recipient(c, listing, user=buyer)
+    buyer = _buyer_with_sale("buyer@x.com")
 
-    first = service.send_recipient(r.id)
-    second = service.send_recipient(r.id)  # Inngest at-least-once replay
-
-    assert first["status"] == "sent"
-    assert second["status"] == "already_sent"
-    threads = Conversation.objects.filter(kind="thread", listing=listing, counterparty_user=buyer)
-    assert threads.count() == 1  # one thread (uniqueness)
-    openers = Message.objects.filter(
-        conversation=threads.first(), dedup_key=f"outreach:{listing.id}:u{buyer.id}"
-    )
-    assert openers.count() == 1  # one opener (dedup_key ON CONFLICT DO NOTHING)
-
-
-@pytest.mark.django_db
-def test_prospect_send_opens_one_way_thread_without_notification():
-    seller = _seller()
-    listing = _listing(seller)
-    prospect = _prospect("P1", n_purchases=1)
-    c = OutreachCampaign.objects.create(listing=listing, seller=seller, status="sending")
-    r = _recipient(c, listing, prospect=prospect)
-
-    assert service.send_recipient(r.id)["status"] == "sent"
-    thread = Conversation.objects.get(
-        kind="thread", listing=listing, counterparty_prospect=prospect
-    )
-    assert Message.objects.filter(conversation=thread).count() == 1
-
-
-# ---------------------------------------------------------------------------
-# P2 E2E (service-level): launch → skip-already-contacted → approve → fan-out
-# ---------------------------------------------------------------------------
-@pytest.mark.django_db
-def test_launch_skips_already_contacted_buyer():
-    seller = _seller()
-    listing = _listing(seller)
-    buyer = _registered_buyer("b1", n_purchases=3)
-
-    # A prior sent ledger row for this buyer+listing.
-    prior = OutreachCampaign.objects.create(listing=listing, seller=seller, status="done")
-    _recipient(prior, listing, user=buyer, status="sent")
-
-    res = service.launch_outreach(seller.id, listing.id)
+    res = _launch(seller, listing)
+    svc.approve_campaign(seller.id, res["campaign_id"])
     rec = OutreachRecipient.objects.get(campaign_id=res["campaign_id"], recipient_user=buyer)
-    assert rec.status == "skipped_already_contacted"
-    assert res["skipped_count"] >= 1
+
+    first = svc.send_recipient(rec.id)
+    replay = svc.send_recipient(rec.id)
+    assert replay["status"] == "already_sent"
+    assert replay["chat_id"] == first["chat_id"]
+
+    # Exactly one opener, one attachment, one outreach_received notification.
+    assert Message.objects.filter(chat_id=first["chat_id"], kind="agent").count() == 1
+    assert MessageAttachment.objects.count() == 1
+    assert Notification.objects.filter(user=buyer, type="outreach_received").count() == 1
 
 
 @pytest.mark.django_db
-def test_full_launch_approve_fanout_slice():
-    seller = _seller()
+def test_ledger_blocks_second_campaign_reaching_the_same_buyer():
+    """The delivery ledger: a listing reaches each buyer at most once, EVER, across
+    campaigns. A second launch marks the already-reached buyer skipped."""
+    seller = _user("seller@x.com")
     listing = _listing(seller)
-    _registered_buyer("b1", n_purchases=4)
-    _registered_buyer("b2", n_purchases=2)
-    _prospect("P1", n_purchases=2)
+    buyer = _buyer_with_sale("buyer@x.com")
 
-    launched = service.launch_outreach(seller.id, listing.id)
-    campaign_id = launched["campaign_id"]
-    assert launched["pending_count"] >= 3
+    r1 = _launch(seller, listing)
+    svc.approve_campaign(seller.id, r1["campaign_id"])
+    rec1 = OutreachRecipient.objects.get(campaign_id=r1["campaign_id"], recipient_user=buyer)
+    assert svc.send_recipient(rec1.id)["status"] == "sent"
 
-    approved = service.approve_campaign(seller.id, campaign_id)
-    assert approved["status"] == "sending"
+    # A fresh campaign for the SAME listing → the buyer is already-contacted at launch.
+    r2 = _launch(seller, listing)
+    assert r2["pending_count"] == 0 and r2["skipped_count"] == 1
+    rec2 = OutreachRecipient.objects.get(campaign_id=r2["campaign_id"], recipient_user=buyer)
+    assert rec2.status == "skipped_already_contacted"
 
-    info = service.campaign_dispatch_info(campaign_id)
+    # And even if a stale pending row is forced through, the send layer re-checks the ledger.
+    rec2.status = "pending"
+    rec2.save(update_fields=["status"])
+    assert svc.send_recipient(rec2.id)["status"] == "skipped"
+    # Still exactly one opener for that (listing, buyer).
+    assert Message.objects.filter(kind="agent").count() == 1
+
+
+@pytest.mark.django_db
+def test_second_outreach_to_same_buyer_reuses_the_pair_chat():
+    """Two different listings to the same buyer share the ONE pair chat (revisions #3):
+    the second opener attaches its listing to the same chat, not a new one."""
+    seller = _user("seller@x.com")
+    l1 = _listing(seller, apn="a", address="1 A St")
+    l2 = _listing(seller, apn="b", address="2 B St")
+    buyer = _buyer_with_sale("buyer@x.com")
+
+    r1 = _launch(seller, l1)
+    svc.approve_campaign(seller.id, r1["campaign_id"])
+    rec1 = OutreachRecipient.objects.get(campaign_id=r1["campaign_id"], recipient_user=buyer)
+    out1 = svc.send_recipient(rec1.id)
+
+    r2 = _launch(seller, l2)
+    svc.approve_campaign(seller.id, r2["campaign_id"])
+    rec2 = OutreachRecipient.objects.get(campaign_id=r2["campaign_id"], recipient_user=buyer)
+    out2 = svc.send_recipient(rec2.id)
+
+    assert out1["chat_id"] == out2["chat_id"]
+    assert Chat.objects.count() == 1
+    # Both listings now hang off messages in the same chat.
+    attached = set(
+        MessageAttachment.objects.filter(message__chat_id=out1["chat_id"]).values_list(
+            "listing_id", flat=True
+        )
+    )
+    assert attached == {l1.id, l2.id}
+
+
+# --- approve / cancel gates ----------------------------------------------------
+@pytest.mark.django_db
+def test_approve_and_cancel_gates():
+    seller = _user("seller@x.com")
+    listing = _listing(seller)
+    _buyer_with_sale("buyer@x.com")
+
+    res = _launch(seller, listing)
+    cid = res["campaign_id"]
+
+    # Cancel moves pending → cancelled and the campaign → cancelled.
+    cancelled = svc.cancel_campaign(seller.id, cid)
+    assert cancelled["status"] == "cancelled"
+    assert OutreachRecipient.objects.filter(campaign_id=cid, status="cancelled").count() == 1
+    # Approving a cancelled campaign is rejected.
+    assert "error" in svc.approve_campaign(seller.id, cid)
+
+    # A fresh one approves cleanly, then re-approval is rejected.
+    res2 = _launch(seller, listing)
+    assert svc.approve_campaign(seller.id, res2["campaign_id"])["status"] == "sending"
+    assert "error" in svc.approve_campaign(seller.id, res2["campaign_id"])
+
+
+# --- fan-out support: dispatch info / outcome / finish -------------------------
+@pytest.mark.django_db
+def test_dispatch_info_outcome_and_finish():
+    seller = _user("seller@x.com")
+    listing = _listing(seller)
+    b1 = _buyer_with_sale("b1@x.com", name="Ann A")
+    b2 = _buyer_with_sale("b2@x.com", name="Bob B")
+
+    ai_chat_id = None
+    res = _launch(seller, listing, copilot_ai_chat_id=ai_chat_id)
+    svc.approve_campaign(seller.id, res["campaign_id"])
+
+    info = svc.campaign_dispatch_info(res["campaign_id"])
+    assert info["status"] == "sending" and info["seller_id"] == seller.id
+    assert info["listing_address"] == "123 Pike St"
+    # Two pending recipients, highest rank first.
+    assert len(info["recipient_ids"]) == 2
+
     for rid in info["recipient_ids"]:
-        service.send_recipient(rid)
+        svc.send_recipient(rid)
 
-    outcome = service.finish_campaign(campaign_id)
-    assert outcome["sent"] == launched["pending_count"]
-    assert OutreachCampaign.objects.get(id=campaign_id).status == "done"
-    # One shared thread opened per sent recipient.
-    assert Conversation.objects.filter(kind="thread", listing=listing).count() == outcome["sent"]
+    outcome = svc.finish_campaign(res["campaign_id"])
+    assert outcome["sent"] == 2 and outcome["total"] == 2
+    OutreachCampaign.objects.get(id=res["campaign_id"]).refresh_from_db()
+    assert OutreachCampaign.objects.get(id=res["campaign_id"]).status == "done"
+    assert {b1.id, b2.id} == set(
+        OutreachRecipient.objects.filter(campaign_id=res["campaign_id"]).values_list(
+            "recipient_user_id", flat=True
+        )
+    )
 
 
+# --- copilot tool wiring + confirm-gate ---------------------------------------
 @pytest.mark.django_db
-def test_cancel_campaign_marks_pending_cancelled():
-    seller = _seller()
+def test_launch_outreach_tool_is_registered_and_confirm_gated():
+    seller = _user("seller@x.com")
+    names = {t.name for t in tools_for("copilot", seller.id)}
+    assert "launch_outreach" in names
+    assert "launch_outreach" in WRITE_TOOL_NAMES
+
+
+class _S(TypedDict, total=False):
+    args: dict
+    result: dict
+
+
+def _one_tool_graph(checkpointer, tool):
+    async def call(state: _S) -> _S:
+        return {"result": await tool.coroutine(**state["args"])}
+
+    g = StateGraph(_S)
+    g.add_node("call", call)
+    g.add_edge(START, "call")
+    g.add_edge("call", END)
+    return g.compile(checkpointer=checkpointer)
+
+
+@pytest.fixture
+def seller_with_buyer(db):
+    seller = _user("seller@x.com")
     listing = _listing(seller)
-    _registered_buyer("b1", n_purchases=2)
-    res = service.launch_outreach(seller.id, listing.id)
-    out = service.cancel_campaign(seller.id, res["campaign_id"])
-    assert out["status"] == "cancelled"
-    assert not OutreachRecipient.objects.filter(
-        campaign_id=res["campaign_id"], status="pending"
-    ).exists()
+    _buyer_with_sale("buyer@x.com")
+    return seller, listing
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_launch_outreach_tool_declined_commits_nothing(reset_checkpointer, seller_with_buyer):
+    from asgiref.sync import sync_to_async
+
+    seller, listing = seller_with_buyer
+    tool = next(t for t in copilot_tools(seller.id) if t.name == "launch_outreach")
+    checkpointer = await get_checkpointer()
+    graph = _one_tool_graph(checkpointer, tool)
+    cfg = {"configurable": {"thread_id": "outreach-decline-1"}}
+
+    # Ranks, then pauses at the confirm interrupt — nothing persisted yet.
+    paused = await graph.ainvoke({"args": {"listing_id": listing.id}}, config=cfg)
+    assert "__interrupt__" in paused
+    payload = paused["__interrupt__"][0].value
+    assert payload["action"] == "launch_outreach" and payload["proposal"]["buyers"]
+    assert await sync_to_async(OutreachCampaign.objects.count)() == 0
+
+    # Decline → no campaign is created, no chat opened.
+    done = await graph.ainvoke(Command(resume={"approved": False}), config=cfg)
+    assert done["result"]["status"] == "cancelled"
+    assert await sync_to_async(OutreachCampaign.objects.count)() == 0
+    assert await sync_to_async(Chat.objects.count)() == 0
+
+    await close_checkpointer()

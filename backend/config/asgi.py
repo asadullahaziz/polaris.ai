@@ -23,7 +23,7 @@ from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 from channels.security.websocket import AllowedHostsOriginValidator  # noqa: E402
 
 from config.lifespan import lifespan_app  # noqa: E402
-from conversations.routing import websocket_urlpatterns  # noqa: E402
+from config.routing import websocket_urlpatterns  # noqa: E402
 
 application = ProtocolTypeRouter(
     {

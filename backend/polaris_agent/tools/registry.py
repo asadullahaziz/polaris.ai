@@ -1,7 +1,7 @@
 """
 Per-graph tool registry (architecture §7). Each graph gets only the tools it is
-allowed to call. P1 wires the copilot subset (principal-bound); the responder and
-outreach subsets land in P2/P3.
+allowed to call. P2 wires the copilot subset (principal-bound); the responder and
+outreach subsets land in P4/P5.
 """
 
 from __future__ import annotations

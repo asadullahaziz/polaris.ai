@@ -1,63 +1,94 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { login } from "@/lib/api";
+
+import { AuthShell } from "@/components/auth-shell";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ApiError, login, resendVerification } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
-  // Prefilled with the demo credentials created on boot (ensure_demo_user).
-  const [username, setUsername] = useState("demo");
-  const [password, setPassword] = useState("demo12345");
+  const qc = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [unverified, setUnverified] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setUnverified(false);
     try {
-      await login(username, password);
-      router.push("/copilot");
+      const me = await login(email, password);
+      qc.setQueryData(["me"], me);
+      router.push("/polaris-ai");
     } catch (err) {
+      if (err instanceof ApiError && err.status === 403) setUnverified(true);
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setBusy(false);
     }
   }
 
+  async function resend() {
+    await resendVerification(email);
+    setError("Verification email re-sent — check your inbox.");
+    setUnverified(false);
+  }
+
   return (
-    <main className="mx-auto max-w-sm p-8">
-      <h1 className="text-xl font-semibold">Log in</h1>
-      <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Username
-          <input
-            className="rounded border border-gray-400 px-3 py-2"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
+    <AuthShell title="Welcome back" description="Sign in with your email">
+      <form onSubmit={onSubmit} className="grid gap-4">
+        <div className="grid gap-2">
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Password
-          <input
+        </div>
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="password">Password</Label>
+            <Link href="/reset" className="text-xs text-muted-foreground underline-offset-4 hover:underline">
+              Forgot password?
+            </Link>
+          </div>
+          <Input
+            id="password"
             type="password"
-            className="rounded border border-gray-400 px-3 py-2"
+            required
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
           />
-        </label>
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <button
-          type="submit"
-          disabled={busy}
-          className="mt-2 rounded bg-black px-4 py-2 text-white disabled:opacity-50 dark:bg-white dark:text-black"
-        >
+        </div>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        {unverified && (
+          <Button type="button" variant="outline" onClick={resend}>
+            Resend verification email
+          </Button>
+        )}
+        <Button type="submit" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
-        </button>
+        </Button>
+        <p className="text-center text-sm text-muted-foreground">
+          No account?{" "}
+          <Link href="/register" className="underline underline-offset-4">
+            Create one
+          </Link>
+        </p>
       </form>
-    </main>
+    </AuthShell>
   );
 }

@@ -58,18 +58,17 @@ THIRD_PARTY_APPS = [
     "channels",
 ]
 
-# One Django app per domain (implementation_plan §2). Empty in P0 except
-# `accounts` (custom user, defined before first migrate) and `matching`
-# (P0 geo spike fixture); domain models land in P1.
+# One Django app per domain — the full standardized v2 layout, registered from
+# P0 as clean skeletons. Each app's models land in its phase (empty models ⇒ no
+# migration until then): users [P0] · catalog [P1] · ai [P2/P5] · chat [P3/P4] ·
+# notifications [P3] · orchestration [P5/P6]. `matching` and `polaris_agent` are
+# plain packages, NOT Django apps. The v1 port source lives in `_v1_reference/`.
 LOCAL_APPS = [
-    "accounts",
+    "users",
     "catalog",
-    "buyers",
-    "matching",
-    "conversations",
-    "outreach",
-    "agent_context",
+    "chat",
     "notifications",
+    "ai",
     "orchestration",
 ]
 
@@ -108,9 +107,10 @@ WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
 # ---------------------------------------------------------------------------
-# Custom user (defined before the first migrate to avoid a painful later swap)
+# Custom user — email is the login (v2). AbstractBaseUser, defined before the
+# first migrate to avoid a painful USERNAME_FIELD swap on a live DB.
 # ---------------------------------------------------------------------------
-AUTH_USER_MODEL = "accounts.AppUser"
+AUTH_USER_MODEL = "users.User"
 
 # ---------------------------------------------------------------------------
 # Database — PostGIS backend (GeoDjango). App tables AND the LangGraph
@@ -168,6 +168,11 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Scoped throttles for the abuse-prone anonymous auth endpoints (resend/reset).
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_resend": env("THROTTLE_AUTH_RESEND", "10/hour"),
+        "auth_reset": env("THROTTLE_AUTH_RESET", "10/hour"),
+    },
 }
 
 SPECTACULAR_SETTINGS = {
@@ -249,6 +254,30 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 LLM_PROVIDER = env("LLM_PROVIDER", "openrouter")  # openrouter | anthropic
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
+
+# ---------------------------------------------------------------------------
+# Email — hand-rolled verification / password-reset tokens (auth design §Auth).
+# SendGrid via Django's SMTP EmailBackend in dev/prod; the pytest test runner
+# swaps in the locmem backend automatically, so `mail.outbox` works offline.
+# When no SendGrid key is present we fall back to the console backend (dev.py),
+# so a fresh clone never fails to "send" a verification email.
+# ---------------------------------------------------------------------------
+SENDGRID_API_KEY = env("SENDGRID_API_KEY")
+EMAIL_BACKEND = env("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = env("EMAIL_HOST", "smtp.sendgrid.net")
+EMAIL_PORT = int(env("EMAIL_PORT", "587") or 587)
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", "apikey")  # SendGrid: literal "apikey"
+EMAIL_HOST_PASSWORD = SENDGRID_API_KEY or ""
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", "Polaris AI <no-reply@polaris.local>")
+
+# SPA base — verification/reset links point the browser back at Next.js routes
+# (/verify?token=… and /reset?token=…) which POST the confirm endpoints.
+FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", "http://localhost:3000")
+
+# Signed-token lifetimes (seconds). Verification is generous; reset is short.
+EMAIL_VERIFY_MAX_AGE = int(env("EMAIL_VERIFY_MAX_AGE", str(60 * 60 * 24 * 3)) or 0)  # 3 days
+PASSWORD_RESET_MAX_AGE = int(env("PASSWORD_RESET_MAX_AGE", str(60 * 60)) or 0)  # 1 hour
 
 # ---------------------------------------------------------------------------
 # Inngest — dev server URL is read from the INNGEST_DEV env var by the SDK.

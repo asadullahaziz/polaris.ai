@@ -1,18 +1,18 @@
 """
-Provider-agnostic model wiring (P0.14).
+Provider-agnostic model wiring (ported from v1 P0.14, unchanged in v2).
 
 #5 (OpenRouter vs native Anthropic) is deferred, so model access hides behind a
-single `get_model(role)` interface with the provider chosen by config. Nothing
-in P0 actually calls a model — this is the seam so P1 (first real
-structured-output use) can swap providers without touching graph code.
+single `get_model(role)` interface with the provider chosen by config
+(`settings.LLM_PROVIDER`). Graph/tool code never names a provider — swapping is a
+settings change.
 
-Roles (implementation_plan tech stack / CLAUDE.md):
-  * workhorse  — copilot + auto-responder
+Roles (CLAUDE.md tech stack):
+  * workhorse  — copilot + away-responder
   * escalation — hard cases
-  * bulk       — ranking/classification at volume
+  * bulk       — ranking/classification + Haiku auto-titling at volume
 
-NOTE (objective-partner flag): the project docs name the workhorse "Sonnet 4.6".
-The concrete model IDs are intentionally env-driven (not hard-coded) and must be
+NOTE (objective-partner flag): the docs name the workhorse "Sonnet 4.6". The
+concrete model IDs are intentionally env-driven (not hard-coded) and must be
 confirmed against the current provider lineup when #5 is resolved — do not treat
 the defaults below as authoritative.
 """
@@ -45,7 +45,7 @@ def get_model(role: str = "workhorse", *, temperature: float = 0.0):
     """
     Return a LangChain chat model for the given role, built for the configured
     provider (`LLM_PROVIDER`). Provider client libs are imported lazily so this
-    module stays importable in P0 even if a given provider isn't installed.
+    module stays importable even if a given provider isn't installed.
     """
     provider = settings.LLM_PROVIDER
     model_id = model_id_for(role)

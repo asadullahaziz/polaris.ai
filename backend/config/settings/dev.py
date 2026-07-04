@@ -24,5 +24,13 @@ DEBUG = True
 # Permissive hosts for local/dev containers.
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "*") or ["*"]
 
+# Without a SendGrid key (fresh clone), print verification/reset emails to the
+# console instead of failing an SMTP connection. Real SendGrid kicks in as soon
+# as SENDGRID_API_KEY is set. (Tests use locmem via the pytest test runner.)
+import os as _os  # noqa: E402
+
+if not _os.environ.get("SENDGRID_API_KEY") and not _os.environ.get("EMAIL_BACKEND"):
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
 # In DEBUG, Channels' AllowedHostsOriginValidator additionally allows
 # localhost/127.0.0.1 websocket origins automatically.
