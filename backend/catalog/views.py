@@ -14,7 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from matching.engine import estimate_value, get_comps
+from matching.engine import estimate_value, get_comps, rank_buyers_for_attrs
 
 from . import services
 from .models import Listing
@@ -36,6 +36,42 @@ class PropertyLookupView(APIView):
     def get(self, request):
         address = request.query_params.get("address", "")
         return Response(services.lookup_property(address))
+
+
+def _num(value, cast):
+    try:
+        return cast(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+class BuyerRankView(APIView):
+    """GET /api/buyers/rank?address=…&price=…&beds=…&sqft=…&condition=…&property_type=…
+    &limit=… — the `/buyers` ad-hoc matcher (no listing persisted). Delegates to the SAME
+    engine entry point the copilot's `find_buyers` tool uses (agent == API): address→geo
+    via the known Property universe (no geocoder), then `rank_buyers_for_attrs`. An
+    unresolvable address degrades to `ranked: []` with `resolved: false`, not an error."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        address = (request.query_params.get("address") or "").strip()
+        if not address:
+            return Response({"detail": "address required"}, status=400)
+        q = request.query_params
+        geom = services.resolve_geo(address)
+        result = rank_buyers_for_attrs(
+            geom=geom,
+            price=_num(q.get("price"), float),
+            condition=_num(q.get("condition"), int),
+            beds=_num(q.get("beds"), int),
+            sqft=_num(q.get("sqft"), int),
+            property_type=q.get("property_type") or None,
+            seller_id=request.user.id,
+            limit=_num(q.get("limit"), int) or 10,
+        )
+        result["resolved"] = geom is not None
+        return Response(result)
 
 
 class ListingViewSet(

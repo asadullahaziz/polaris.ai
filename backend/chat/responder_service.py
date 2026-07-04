@@ -309,6 +309,19 @@ def escalate(
     return {"status": "escalated", "reason": reason}
 
 
+def discard_draft(user_id: int, message_id: int) -> dict:
+    """The human discards a `draft_for_approval` draft — delete it without sending.
+    Owner-only via `sender`; a `sent` message is never touched (approve already won)."""
+    from .models import Message
+
+    deleted, _ = Message.objects.filter(
+        id=message_id, kind="agent", sender_id=user_id, status="draft"
+    ).delete()
+    if not deleted:
+        return {"error": "draft not found"}
+    return {"status": "discarded", "message_id": message_id}
+
+
 @transaction.atomic
 def approve_draft(user_id: int, message_id: int) -> dict:
     """The human approves a `draft_for_approval` draft → flip it to sent (the takeover

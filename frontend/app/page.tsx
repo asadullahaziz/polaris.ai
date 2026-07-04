@@ -1,29 +1,26 @@
-import Link from "next/link";
+"use client";
 
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
+
+import { Skeleton } from "@/components/ui/skeleton";
+import { useMe } from "@/lib/hooks";
+
+// `/` is a pure switch: logged-out → /login, authenticated → /polaris-ai (the app home).
 export default function Home() {
+  const router = useRouter();
+  const { data: me, isLoading } = useMe();
+
+  useEffect(() => {
+    if (isLoading) return;
+    router.replace(me ? "/polaris-ai" : "/login");
+  }, [me, isLoading, router]);
+
   return (
-    <main className="mx-auto max-w-2xl p-8">
-      <h1 className="text-2xl font-semibold">Polaris AI</h1>
-      <p className="mt-2 text-gray-600 dark:text-gray-300">
-        Your AI real-estate agent &amp; copilot. Intake a listing, value it against real
-        King County comps, and set your agent&apos;s mandate — all from chat.
-      </p>
-      <div className="mt-6 flex gap-4">
-        <Link
-          href="/login"
-          className="rounded bg-black px-4 py-2 text-white dark:bg-white dark:text-black"
-        >
-          Log in
-        </Link>
-        <Link href="/copilot" className="rounded border border-gray-400 px-4 py-2">
-          Open copilot
-        </Link>
-        <Link href="/inbox" className="rounded border border-gray-400 px-4 py-2">
-          Open inbox
-        </Link>
-        <Link href="/spike" className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-500">
-          P0 spike
-        </Link>
+    <main className="flex min-h-svh items-center justify-center">
+      <div className="w-64 space-y-3">
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="h-4 w-64" />
       </div>
     </main>
   );

@@ -62,6 +62,7 @@ class _ChatDictSerializer(serializers.Serializer):
     messages=extend_schema(responses=OpenApiTypes.OBJECT),
     read=extend_schema(responses=OpenApiTypes.OBJECT),
     approve_draft=extend_schema(responses=OpenApiTypes.OBJECT),
+    discard_draft=extend_schema(responses=OpenApiTypes.OBJECT),
 )
 class ChatViewSet(viewsets.GenericViewSet):
     serializer_class = _ChatDictSerializer
@@ -163,4 +164,18 @@ class ChatViewSet(viewsets.GenericViewSet):
         msg = Message.objects.filter(id=res["message_id"]).first()
         if msg is not None:
             _broadcast_and_arm(chat_id, services.serialize_message(msg), res["message_id"])
+        return Response(res)
+
+    @action(detail=True, methods=["post"], url_path="discard-draft")
+    def discard_draft(self, request, pk=None):
+        """Discard a `draft_for_approval` agent draft without sending it (owner-only)."""
+        chat_id = int(pk)
+        if services.chat_membership(chat_id, request.user.id) is None:
+            return Response({"detail": "not found"}, status=404)
+        msg_id = request.data.get("message_id")
+        if msg_id is None:
+            return Response({"detail": "message_id required"}, status=400)
+        res = svc.discard_draft(request.user.id, int(msg_id))
+        if "error" in res:
+            return Response(res, status=404)
         return Response(res)

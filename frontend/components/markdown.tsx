@@ -3,8 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-// Tailwind-styled markdown so the agent's comp tables + "why this price" render
-// cleanly (implementation_plan P1.11).
+// Styled markdown so the agent's comp tables + "why this price" render cleanly.
 export function Markdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
@@ -18,8 +17,9 @@ export function Markdown({ children }: { children: string }) {
         h2: (p) => <h2 className="mt-3 mb-1 text-base font-semibold" {...p} />,
         h3: (p) => <h3 className="mt-3 mb-1 text-sm font-semibold" {...p} />,
         strong: (p) => <strong className="font-semibold" {...p} />,
+        a: (p) => <a className="underline underline-offset-2" {...p} />,
         code: (p) => (
-          <code className="rounded bg-gray-200 px-1 py-0.5 text-[0.85em] dark:bg-gray-700" {...p} />
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]" {...p} />
         ),
         table: (p) => (
           <div className="my-3 overflow-x-auto">
@@ -27,9 +27,9 @@ export function Markdown({ children }: { children: string }) {
           </div>
         ),
         th: (p) => (
-          <th className="border border-gray-300 bg-gray-100 px-2 py-1 text-left font-medium dark:border-gray-600 dark:bg-gray-800" {...p} />
+          <th className="border bg-muted px-2 py-1 text-left font-medium" {...p} />
         ),
-        td: (p) => <td className="border border-gray-300 px-2 py-1 dark:border-gray-600" {...p} />,
+        td: (p) => <td className="border px-2 py-1" {...p} />,
       }}
     >
       {children}

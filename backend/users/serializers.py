@@ -18,6 +18,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "avatar_url",
             "auto_reply_when_away",
             "agent_autonomy",
+            "agent_reply_cap",
             "agent_instructions",
         ]
 
@@ -134,6 +135,7 @@ class ProfileUpdateSerializer(serializers.Serializer):
         choices=[c[0] for c in UserProfile._meta.get_field("agent_autonomy").choices],
         required=False,
     )
+    agent_reply_cap = serializers.IntegerField(required=False, min_value=1, max_value=10)
     agent_instructions = serializers.CharField(required=False, allow_blank=True)
 
     _USER_FIELDS = {"full_name", "phone", "preferred_channel"}
