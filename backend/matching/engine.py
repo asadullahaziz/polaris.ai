@@ -478,9 +478,22 @@ def _load_boxes(user_ids):
 
 def _relationships(seller_id, user_ids) -> set[int]:
     """Registered buyers with an existing chat pairing to this seller (the 0.10
-    'warm' signal). INERT until the `chat` app lands: P3 replaces the body with a
-    ChatMember pair query. Until then the weight is present but contributes 0."""
-    return set()
+    'warm' signal). Pair-based (P3): a `Chat` exists whose two `ChatMember` rows are
+    {seller_id, candidate}. Scoring math unchanged — this just turns the weight live."""
+    if seller_id is None or not user_ids:
+        return set()
+    from chat.models import ChatMember
+
+    seller_chat_ids = ChatMember.objects.filter(user_id=seller_id).values_list(
+        "chat_id", flat=True
+    )
+    if not seller_chat_ids:
+        return set()
+    return set(
+        ChatMember.objects.filter(chat_id__in=list(seller_chat_ids), user_id__in=user_ids)
+        .exclude(user_id=seller_id)
+        .values_list("user_id", flat=True)
+    )
 
 
 def _load_names(user_ids):

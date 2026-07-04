@@ -1,7 +1,14 @@
-"""Chat URL routes — mounted into config.urls in this app's phase."""
+"""Chat URL routes — /api/chats/… (mounted by config.urls)."""
 
 from __future__ import annotations
 
+from rest_framework.routers import DefaultRouter
+
+from .views import ChatViewSet
+
 app_name = "chat"
 
-urlpatterns: list = []
+router = DefaultRouter()
+router.register("chats", ChatViewSet, basename="chat")
+
+urlpatterns = router.urls

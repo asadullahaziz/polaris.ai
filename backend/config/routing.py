@@ -9,7 +9,9 @@ Each phase appends its consumers here:
 from __future__ import annotations
 
 from ai.routing import websocket_urlpatterns as ai_ws
+from chat.routing import websocket_urlpatterns as chat_ws
 
 websocket_urlpatterns: list = [
     *ai_ws,
+    *chat_ws,
 ]

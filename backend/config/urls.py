@@ -28,6 +28,8 @@ urlpatterns = [
     path("api/auth/", include("users.urls")),
     path("api/", include("catalog.urls")),  # /api/listings/... + /api/properties/lookup
     path("api/ai/", include("ai.urls")),  # /api/ai/chats/... + /api/ai/memory/
+    path("api/", include("chat.urls")),  # /api/chats/...
+    path("api/", include("notifications.urls")),  # /api/notifications/...
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
         "api/schema/swagger-ui/",
