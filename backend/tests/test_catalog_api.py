@@ -15,6 +15,7 @@ from catalog.models import Property
 User = get_user_model()
 
 LOOKUP = "/api/properties/lookup"
+SEARCH = "/api/properties/search"
 LISTINGS = "/api/listings/"
 
 
@@ -94,6 +95,33 @@ def test_property_lookup_dedup_is_case_and_suffix_insensitive(client):
 
     miss = client.get(LOOKUP, {"address": "999 Nowhere Blvd"})
     assert miss.data["found"] is False
+
+
+@pytest.mark.django_db
+def test_property_search_typeahead(client):
+    from catalog.services import normalize_address
+
+    for raw in ("412 Alder St, Norhaven, WA 98115", "204 Maple Ave, Norhaven, WA 98115"):
+        Property.objects.create(address_raw=raw, address_norm=normalize_address(raw), beds=3)
+
+    # Fragment hits (case-insensitive, partial).
+    res = client.get(SEARCH, {"q": "alder"})
+    assert res.status_code == 200
+    assert [r["address_raw"] for r in res.data["results"]] == ["412 Alder St, Norhaven, WA 98115"]
+
+    # Suffix canonicalization: "Alder Street" finds "Alder St".
+    res = client.get(SEARCH, {"q": "412 Alder Street"})
+    assert len(res.data["results"]) == 1
+
+    # Town-name search spans properties; limit caps the page.
+    res = client.get(SEARCH, {"q": "norhaven", "limit": 1})
+    assert len(res.data["results"]) == 1
+
+    # Too-short queries return nothing (no full-table dumps).
+    assert client.get(SEARCH, {"q": "x"}).data["results"] == []
+
+    # Auth required.
+    assert APIClient().get(SEARCH, {"q": "alder"}).status_code in (401, 403)
 
 
 @pytest.mark.django_db

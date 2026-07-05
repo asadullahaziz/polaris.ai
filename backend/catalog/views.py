@@ -45,6 +45,19 @@ def _num(value, cast):
         return None
 
 
+class PropertySearchView(APIView):
+    """GET /api/properties/search?q=…&limit=… — closed-world address autocomplete
+    (typeahead) over the known Property universe. Same service seam as the copilot's
+    `search_properties` tool (agent == API)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        q = request.query_params.get("q", "")
+        limit = _num(request.query_params.get("limit"), int) or 8
+        return Response({"results": services.search_properties(q, limit)})
+
+
 class BuyerRankView(APIView):
     """GET /api/buyers/rank?address=…&price=…&beds=…&sqft=…&condition=…&property_type=…
     &limit=… — the `/buyers` ad-hoc matcher (no listing persisted). Delegates to the SAME

@@ -102,6 +102,13 @@ def copilot_tools(principal_id: int) -> list:
         return await dal.property_lookup(address)
 
     @tool
+    async def search_properties(q: str, limit: int = 8) -> list:
+        """Search known properties by partial address (closed-world autocomplete —
+        there is no geocoder). Use when the user gives a fragment like a street or
+        town name; returns matching properties with attributes and last sale."""
+        return await dal.search_properties(q, limit)
+
+    @tool
     async def list_my_listings() -> list:
         """List the user's own listings (id, title, status, asking price, address, beds)."""
         return await dal.list_seller_listings(principal_id)
@@ -444,6 +451,7 @@ def copilot_tools(principal_id: int) -> list:
         # reads
         extract_listing_details,
         lookup_property,
+        search_properties,
         list_my_listings,
         get_listing,
         estimate_market_value,

@@ -192,6 +192,12 @@ def _property_lookup(address: str) -> dict:
     return services.lookup_property(address)
 
 
+def _search_properties(q: str, limit: int = 8) -> list[dict]:
+    from catalog import services
+
+    return services.search_properties(q, limit)
+
+
 def _listing_summary_row(lst) -> dict:
     lp = lst.listingproperty_set.select_related("property").order_by("sort_order").first()
     prop = lp.property if lp else None
@@ -373,6 +379,7 @@ def _set_mandate_for_listing(listing_id: int, seller_id: int, fields: dict) -> d
 
 
 property_lookup = sync_to_async(_property_lookup)
+search_properties = sync_to_async(_search_properties)
 list_seller_listings = sync_to_async(_list_seller_listings)
 get_listing_detail = sync_to_async(_get_listing_detail)
 create_listing = sync_to_async(_create_listing)

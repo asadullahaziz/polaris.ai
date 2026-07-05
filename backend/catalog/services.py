@@ -100,6 +100,26 @@ def resolve_geo(address: str):
     return p.geom if p else None
 
 
+def search_properties(q: str, limit: int = 8) -> list[dict]:
+    """Closed-world address autocomplete over the known Property universe (no
+    geocoder). Matching runs on the normalized address so 'Alder Street' finds
+    'Alder St'. Read-only; powers the FE combobox AND the copilot's search tool."""
+    norm = normalize_address(q)
+    if len(norm) < 2:
+        return []
+    qs = Property.objects.filter(address_norm__icontains=norm).order_by("address_norm")[
+        : max(1, min(limit, 25))
+    ]
+    return [
+        {
+            **_property_public(p),
+            "last_sale_price": float(p.last_sale_price) if p.last_sale_price is not None else None,
+            "last_sale_date": p.last_sale_date.isoformat() if p.last_sale_date else None,
+        }
+        for p in qs
+    ]
+
+
 # --- property attach/create (fetch-existing dedup) ----------------------------
 _NEW_PROPERTY_FIELDS = (
     "property_type",

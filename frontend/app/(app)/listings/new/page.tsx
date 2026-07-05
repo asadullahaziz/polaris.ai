@@ -3,9 +3,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { ImageIcon, Lock, Plus, Search, Trash2 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { AddressCombobox } from "@/components/address-combobox";
 import { MandateForm } from "@/components/mandate-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ import {
   type Property,
   type PropertyItemInput,
   type PropertyLookup,
+  type PropertySearchResult,
 } from "@/lib/api";
 import { fmtMoney, uuid } from "@/lib/hooks";
 
@@ -151,6 +153,16 @@ function NewListingInner() {
       setLookupBusy(false);
     }
   }
+
+  // Arriving with ?address= (the buyers-page handoff) auto-runs the lookup so
+  // the matched card is already waiting — zero re-typing.
+  const autoLooked = useRef(false);
+  useEffect(() => {
+    if (autoLooked.current) return;
+    autoLooked.current = true;
+    if (searchParams.get("address")) doLookup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function pushRow(row: PropRow) {
     const next = [...rows, row];
@@ -338,17 +350,18 @@ function NewListingInner() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex gap-2">
-            <Input
-              placeholder="Street address, city, state"
-              value={lookupAddress}
-              onChange={(e) => setLookupAddress(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  doLookup();
-                }
-              }}
-            />
+            <div className="flex-1">
+              <AddressCombobox
+                placeholder="Start typing an address, street, or town…"
+                value={lookupAddress}
+                onChange={setLookupAddress}
+                onSelect={(p: PropertySearchResult) => {
+                  // A picked suggestion IS the lookup hit — skip the roundtrip.
+                  setLookupAddress(p.address_raw);
+                  setLookup({ found: true, normalized: p.address_norm, property: p });
+                }}
+              />
+            </div>
             <Button
               type="button"
               variant="secondary"

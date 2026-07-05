@@ -185,6 +185,17 @@ export const lookupProperty = (address: string) =>
     (r) => json<PropertyLookup>(r),
   );
 
+export type PropertySearchResult = Property & {
+  address_norm: string;
+  last_sale_price: number | null;
+  last_sale_date: string | null;
+};
+
+export const searchProperties = (q: string, limit = 8) =>
+  apiFetch(
+    `/api/properties/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+  ).then((r) => json<{ results: PropertySearchResult[] }>(r));
+
 export type ListingSummary = {
   id: number;
   title: string;

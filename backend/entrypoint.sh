@@ -16,9 +16,10 @@ python manage.py migrate --noinput
 echo "[entrypoint] ensure demo user"
 python manage.py ensure_demo_user
 
-# P1 demo data (idempotent; re-runs are a no-op). ~20k KC comps + ~40 personas
-# (users) + ~15 active listings. Non-fatal so a hiccup never blocks bring-up.
-echo "[entrypoint] seed King County demo data"
+# Demo data (idempotent; re-runs are a no-op): the Kessler County world — ~3.2k
+# comps with resolvable addresses + ~40 archetype personas + ~15 active listings.
+# Non-fatal so a hiccup never blocks bring-up.
+echo "[entrypoint] seed Kessler County demo data"
 python manage.py seed_kc || echo "[entrypoint] seed_kc failed (non-fatal); run 'make seed' manually"
 
 # Local staticfiles (admin/DRF UI). Never blocks bring-up.

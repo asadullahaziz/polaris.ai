@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { AddressCombobox } from "@/components/address-combobox";
 import { STRATEGIES } from "@/components/buy-box-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,7 +39,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { openChatWith, rankBuyers, type BuyerRankResult } from "@/lib/api";
+import {
+  openChatWith,
+  rankBuyers,
+  type BuyerRankResult,
+  type PropertySearchResult,
+} from "@/lib/api";
 
 const FEATURES: [string, string][] = [
   ["bought_in_area", "Bought in area"],
@@ -68,6 +74,19 @@ export default function BuyersPage() {
   const [result, setResult] = useState<BuyerRankResult | null>(null);
   const [searchedAddress, setSearchedAddress] = useState("");
   const [msgBusy, setMsgBusy] = useState<number | null>(null);
+  const [selected, setSelected] = useState<PropertySearchResult | null>(null);
+
+  // The "county record" moment: picking a suggestion auto-fills the deal form
+  // from the known property record (real platforms pull public records here).
+  function onPick(p: PropertySearchResult) {
+    setAddress(p.address_raw);
+    setSelected(p);
+    if (p.last_sale_price != null) setPrice(String(Math.round(p.last_sale_price)));
+    if (p.beds != null) setBeds(String(p.beds));
+    if (p.sqft != null) setSqft(String(p.sqft));
+    if (p.condition != null) setCondition(String(p.condition));
+    if (p.property_type) setPropertyType(p.property_type);
+  }
 
   async function onSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -116,12 +135,15 @@ export default function BuyersPage() {
               <div className="grid gap-3 sm:grid-cols-[1fr_10rem_12rem]">
                 <div className="grid gap-1.5">
                   <Label htmlFor="address">Address</Label>
-                  <Input
+                  <AddressCombobox
                     id="address"
-                    required
-                    placeholder="123 Main St, Seattle"
+                    placeholder="Start typing an address, street, or town…"
                     value={address}
-                    onChange={(e) => setAddress(e.target.value)}
+                    onChange={(v) => {
+                      setAddress(v);
+                      setSelected(null);
+                    }}
+                    onSelect={onPick}
                   />
                 </div>
                 <div className="grid gap-1.5">
@@ -255,6 +277,36 @@ export default function BuyersPage() {
           </CardContent>
         </Card>
 
+        {selected && (
+          <Card className="mb-6">
+            <CardContent className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                County record
+              </span>
+              <span className="font-medium">{selected.address_raw}</span>
+              <span className="text-muted-foreground">
+                {[
+                  selected.beds != null && `${selected.beds} bd`,
+                  selected.baths != null && `${selected.baths} ba`,
+                  selected.sqft != null &&
+                    `${selected.sqft.toLocaleString()} sqft`,
+                  selected.year_built != null && `built ${selected.year_built}`,
+                  selected.condition != null &&
+                    `condition ${selected.condition}/5`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+              {selected.last_sale_price != null && (
+                <span className="text-muted-foreground">
+                  Last sold ${Math.round(selected.last_sale_price).toLocaleString()}
+                  {selected.last_sale_date ? ` on ${selected.last_sale_date}` : ""}
+                </span>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {!result && (
           <p className="py-16 text-center text-sm text-muted-foreground">
             Enter a deal address above to rank likely buyers.
@@ -264,8 +316,8 @@ export default function BuyersPage() {
         {result && !result.resolved && (
           <div className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-            Address not found in our property data — ranking without location
-            signals
+            Address not found in our records — pick a suggested address to rank
+            buyers with location signals.
           </div>
         )}
 

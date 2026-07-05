@@ -22,7 +22,7 @@ In-App Communication, and Polaris AI (agent mode vs. copilot mode).
 
 ## Current status
 
-> **⚠️ v2 REBUILD — PLAN APPROVED (2026-07-03); P0–P6 BUILT (93 backend tests green, `next build` green, branch `polaris-ai-v2`); P6 awaiting user review/demo.** Per-phase v2 progress lives in the plan doc's as-built ledgers (P2/P3/P5/P6) and the `project-v2-rebuild` memory — trust those, not the v1 "Current status" body below. The status below describes the built **v1** POC (the port-from reference). The v2 direction is a full-web-app rebuild-in-place + port. **Authoritative plan: [`.claude/plans/polaris_ai_v2_revisions_2026-07-03.md`](.claude/plans/polaris_ai_v2_revisions_2026-07-03.md)** (approved revisions; supersede the base [`polaris_ai_v2_implementation_plan.md`](.claude/plans/polaris_ai_v2_implementation_plan.md) where they overlap). Locked v2 changes: registered users only (prospects removed); custom email-login user (+ password reset); fused `conversation` split into human `chat` + `ai` tables; **free-form 1:1 chat — ONE chat per user-pair, listings as message attachments, no `subject_listing`/`author_side`**; the auto-responder is a single **away-assistant chatbot** (user-level enable, role-agnostic airlock); the copilot is a **full agentic assistant** (tools mirror the API, confirm-every-write); governance knobs (`auto_reply_when_away`/`agent_autonomy`/`agent_instructions`) on `UserProfile`; ShadCN frontend. Treat the v1 details below as port-from reference, not the v2 target, until rewritten per-phase.
+> **⚠️ v2 REBUILD — PLAN APPROVED (2026-07-03); P0–P6 BUILT + merged to `main` (95 backend tests green); P6 awaiting user review/demo. Demo data = the Kessler County world (2026-07-05): subsampled fictional towns, universal resolvable addresses, archetype personas, closed-world address autocomplete — see [`DEMO.md`](./DEMO.md).** Per-phase v2 progress lives in the plan doc's as-built ledgers (P2/P3/P5/P6) and the `project-v2-rebuild` memory — trust those, not the v1 "Current status" body below. The status below describes the built **v1** POC (the port-from reference). The v2 direction is a full-web-app rebuild-in-place + port. **Authoritative plan: [`.claude/plans/polaris_ai_v2_revisions_2026-07-03.md`](.claude/plans/polaris_ai_v2_revisions_2026-07-03.md)** (approved revisions; supersede the base [`polaris_ai_v2_implementation_plan.md`](.claude/plans/polaris_ai_v2_implementation_plan.md) where they overlap). Locked v2 changes: registered users only (prospects removed); custom email-login user (+ password reset); fused `conversation` split into human `chat` + `ai` tables; **free-form 1:1 chat — ONE chat per user-pair, listings as message attachments, no `subject_listing`/`author_side`**; the auto-responder is a single **away-assistant chatbot** (user-level enable, role-agnostic airlock); the copilot is a **full agentic assistant** (tools mirror the API, confirm-every-write); governance knobs (`auto_reply_when_away`/`agent_autonomy`/`agent_instructions`) on `UserProfile`; ShadCN frontend. Treat the v1 details below as port-from reference, not the v2 target, until rewritten per-phase.
 
 **Implementation underway — Phases 0–3 built (all three LangGraph graphs).** The design phase
 is closed (product definition, PRD, feature/flow spec, agent architecture, full data model/schema,
@@ -183,22 +183,28 @@ docker-compose.yml       6 services, one .env; `docker compose up` = the whole s
 
 ## Commands
 
-- **Bring up the whole stack:** `docker compose up --build` (or `make up`). Frontend on
-  http://localhost:3000, API on http://localhost:8000, Inngest dev UI on :8288, MinIO
+- **Bring up the whole stack:** `docker compose up --build` (or `make up` / `make up-d`). Frontend
+  on http://localhost:3000, API on http://localhost:8000, Inngest dev UI on :8288, MinIO
   console on :9001. First boot generates migrations in-container, migrates, creates a demo
-  login (`demo` / `demo12345`) + P0 geo fixtures, and runs `seed_kc` (P1 demo data).
-- **The P1 copilot demo:** open http://localhost:3000/copilot and log in. Use a **seed seller**
-  (`kc_seller_1` / `polaris123`) to see the 15 seeded listings and value them, or `demo` for a
-  fresh intake. Seed buyers are `kc_buyer_1..15` (same password); they have buy-boxes + history.
-- **The P3 auto-responder demo:** as `kc_seller_1`, ask the copilot to "reach out to the best buyers
+  login (`demo` / `demo12345`) + P0 geo fixtures, and runs `seed_kc` — the **Kessler County
+  demo world** (~3.2k properties across 8 fictional towns, every one with a resolvable street
+  address; archetype-varied buyer personas). The seed prints a demo cheat-sheet (addresses +
+  logins); **see [`DEMO.md`](./DEMO.md) for the full demo script**.
+- **The copilot demo:** open http://localhost:3000 and log in. Use the **seed seller**
+  (`kc_seller_1@polaris.local` / `polaris123`) to see the 15 seeded listings and value them, or
+  `demo` for a fresh intake. Seed buyers are `kc_buyer_1..15@polaris.local` (same password);
+  they have buy-boxes + history. The `/buyers` Find Buyers page uses closed-world address
+  autocomplete (`/api/properties/search`) — type a street or town fragment and pick.
+- **The auto-responder demo:** as `kc_seller_1@polaris.local`, ask the copilot to "reach out to the best buyers
   for listing #N" and approve. The offline buyers' agents auto-reply after the grace window — open
   http://localhost:3000/inbox to watch the qualify/hold/decline replies land per thread. Opening a
   thread + typing is the human takeover (presence silences that side's agent). Shorten the wait for a
   live demo with `RESPONDER_GRACE_SECONDS` (default 45). Inngest dev UI on :8288 shows `thread-inbound`.
 - **Fresh-clone reset:** `make down-v` (drops volumes) then `make up`.
 - **Run the test suite (the gate):** `make test` — `makemigrations && pytest` in the backend
-  container (schema, matching engine incl. `assess_deal`, seed idempotency/rebase, copilot plumbing,
-  outreach ledger/fan-out, the P3 commit-gate invariant + disclosure gates, P0 spike). 37 passing.
+  container (schema, matching engine incl. `assess_deal`, seed idempotency/rebase/address
+  resolvability, property search, copilot plumbing, outreach ledger/fan-out, the commit-gate
+  invariant + disclosure gates, P0 spike). 95 passing, 2 skipped (live-LLM smokes).
 - **Migrations / shell / psql / format:** `make migrate` · `make shell` · `make psql` · `make fmt`.
 - **Regenerate the typed FE client** (backend must be up): `cd frontend && npm run gen:api`.
 
