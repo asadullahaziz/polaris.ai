@@ -97,7 +97,12 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         data = payload.get("data") or {}
         try:
             if mtype == "copilot.send":
-                if self._pending is not None:
+                conv_id = data.get("conversation_id")
+                # Reject if a confirm is parked — in memory OR durably (a fresh socket after
+                # a reload has no in-memory flag) — so a new turn can't orphan the interrupt.
+                if self._pending is not None or (
+                    conv_id is not None and await dal.load_pending_confirm(conv_id)
+                ):
                     await self._send(
                         "copilot.error",
                         {"detail": "finish the pending confirmation before sending again"},
@@ -105,12 +110,20 @@ class CopilotConsumer(AsyncWebsocketConsumer):
                     return
                 body = (data.get("body") or "").strip()
                 if body:
-                    await self._turn(data.get("conversation_id"), body)
+                    await self._turn(conv_id, body)
             elif mtype == "copilot.confirm_response":
-                await self._resume(bool(data.get("approved")))
+                await self._resume(bool(data.get("approved")), data.get("conversation_id"))
         except Exception as exc:  # surface, don't drop the socket
             log.exception("copilot turn failed")
             self._pending = None
+            # Drop any durable record too — an errored turn is retried from scratch (the
+            # checkpoint is ephemeral scratch), never left stuck blocking the conversation.
+            conv_id = (payload.get("data") or {}).get("conversation_id")
+            if conv_id is not None:
+                try:
+                    await dal.clear_pending_confirm(conv_id)
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
             await self._send("copilot.error", {"detail": str(exc)})
 
     # ---- The turn (with a durable pause on write confirmations) -------------------
@@ -160,8 +173,12 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             return
         await self._finalize(conv_id, buf, needs_title, body)
 
-    async def _resume(self, approved: bool) -> None:
+    async def _resume(self, approved: bool, conv_id=None) -> None:
         p = self._pending
+        if not p and conv_id is not None:
+            # Fresh socket after a nav/reload: rehydrate the parked turn from the DB so we
+            # can resume the exact interrupt (checkpoint keyed by the stored cfg.thread_id).
+            p = await dal.load_pending_confirm(conv_id)
         if not p:
             await self._send("copilot.error", {"detail": "no pending confirmation"})
             return
@@ -191,7 +208,11 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             "needs_title": needs_title,
             "first_body": first_body,
             "ids": [i.id for i in interrupts],
+            "value": interrupts[0].value,  # the confirm-card render payload
         }
+        # Persist the whole resumable payload so the card + parked turn survive a nav /
+        # reload / restart. Everything here is JSON-serializable (cfg/buf/ids/value).
+        await dal.save_pending_confirm(conv_id, self._pending)
         await self._send(
             "copilot.confirm", {"conversation_id": conv_id, "value": interrupts[0].value}
         )
@@ -199,6 +220,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _finalize(self, conv_id, buf, needs_title, first_body) -> None:
         answer = "".join(buf).strip() or "(no response)"
         msg_id = await dal.save_ai_message(conv_id, role="assistant", content=answer)
+        await dal.clear_pending_confirm(conv_id)  # turn resolved (approved or declined)
         title = await self._title(conv_id, first_body) if needs_title else None
         await self._send(
             "copilot.done", {"conversation_id": conv_id, "message_id": msg_id, "title": title}

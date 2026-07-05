@@ -260,3 +260,99 @@ async def test_write_tool_declined_commits_nothing(reset_checkpointer, user):
     assert await sync_to_async(Listing.objects.filter(seller=user).count)() == 0
 
     await close_checkpointer()
+
+
+# ============ durable pending-confirm (survives nav / reload / restart) =========
+@pytest.mark.django_db
+def test_pending_confirm_dal_roundtrip(user):
+    """The parked-turn payload persists on the AiChat row and clears cleanly. This is what
+    lets a fresh socket rehydrate the confirm + resume the interrupt after a reload."""
+    chat_id = dal._create_ai_chat(user.id)
+    assert dal._load_pending_confirm(chat_id) is None
+
+    payload = {
+        "conv_id": chat_id,
+        "cfg": {"configurable": {"thread_id": f"copilot:{chat_id}:1", "ai_chat_id": chat_id}},
+        "buf": ["Sure, "],
+        "needs_title": True,
+        "first_body": "list 1 A St",
+        "ids": ["abc123"],
+        "value": {"kind": "confirm_write", "action": "create_listing", "summary": "x", "proposal": {}},
+    }
+    dal._save_pending_confirm(chat_id, payload)
+    loaded = dal._load_pending_confirm(chat_id)
+    assert loaded["cfg"]["configurable"]["thread_id"] == f"copilot:{chat_id}:1"
+    assert loaded["value"]["action"] == "create_listing"
+
+    dal._clear_pending_confirm(chat_id)
+    assert dal._load_pending_confirm(chat_id) is None
+
+
+@pytest.mark.django_db
+def test_detail_serializer_exposes_only_the_confirm_render_payload(user):
+    """The REST detail exposes the card payload (so a reopened session rebuilds it) but
+    never the internal cfg/thread_id/buf, and NULL when nothing is parked."""
+    from ai.models import AiChat
+    from ai.serializers import AiChatDetailSerializer
+
+    chat = AiChat.objects.create(owner=user)
+    assert AiChatDetailSerializer(chat).data["pending_confirm"] is None
+
+    value = {
+        "kind": "confirm_write",
+        "action": "create_listing",
+        "summary": "Create listing",
+        "proposal": {"fields": {"address": "1 A St"}},
+    }
+    chat.pending_confirm = {"cfg": {"secret": 1}, "buf": ["internal"], "value": value}
+    chat.save(update_fields=["pending_confirm"])
+
+    exposed = AiChatDetailSerializer(chat).data["pending_confirm"]
+    assert exposed == value
+    assert "cfg" not in exposed and "buf" not in exposed  # internals never leak
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_parked_confirm_resumes_from_the_durable_record_on_a_fresh_graph(
+    reset_checkpointer, user
+):
+    """The reload contract: a turn paused under one 'socket' resumes + commits from a
+    BRAND-NEW graph object (no in-memory state) using only the durable record + the shared
+    Postgres checkpointer — proving the parked interrupt survives a nav/reload/restart."""
+    from asgiref.sync import sync_to_async
+
+    checkpointer = await get_checkpointer()
+    chat_id = await dal.create_ai_chat(user.id)
+    cfg = {"configurable": {"thread_id": f"copilot:{chat_id}:1"}}
+    args = {"address": "88 Durable Way", "beds": 3, "asking_price": 500000}
+
+    # First "socket": pause at the confirm interrupt, then persist the resumable payload.
+    graph1 = _one_tool_graph(checkpointer, _tool_by_name(user.id, "create_listing"))
+    paused = await graph1.ainvoke({"args": args}, config=cfg)
+    assert "__interrupt__" in paused
+    await dal.save_pending_confirm(
+        chat_id,
+        {
+            "conv_id": chat_id,
+            "cfg": cfg,
+            "buf": [],
+            "needs_title": True,
+            "first_body": "list 88 Durable Way",
+            "ids": [i.id for i in paused["__interrupt__"]],
+            "value": paused["__interrupt__"][0].value,
+        },
+    )
+    assert await sync_to_async(Listing.objects.filter(seller=user).count)() == 0
+
+    # Fresh "socket": no in-memory pending, a new graph object, same checkpointer. Rehydrate
+    # cfg from the DB and approve → the SAME parked turn resumes and commits exactly once.
+    record = await dal.load_pending_confirm(chat_id)
+    graph2 = _one_tool_graph(checkpointer, _tool_by_name(user.id, "create_listing"))
+    done = await graph2.ainvoke(Command(resume={"approved": True}), config=record["cfg"])
+    assert done["result"]["address"] == "88 Durable Way"
+    assert await sync_to_async(Listing.objects.filter(seller=user).count)() == 1
+
+    await dal.clear_pending_confirm(chat_id)
+    assert await dal.load_pending_confirm(chat_id) is None
+
+    await close_checkpointer()

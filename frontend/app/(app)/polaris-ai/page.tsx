@@ -25,7 +25,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import {
   deleteAiChat,
-  getAiChatMessages,
+  getAiChat,
   listAiChats,
   WS_BASE,
 } from "@/lib/api";
@@ -169,8 +169,23 @@ export default function PolarisAiPage() {
     setActiveId(id);
     setStreaming("");
     setPendingConfirm(false);
-    const transcript = await getAiChatMessages(id);
-    setMessages(transcript.map((m) => ({ type: "chat", id: m.id, role: m.role, content: m.content })));
+    const chat = await getAiChat(id);
+    const msgs: LocalMsg[] = chat.messages.map((m) => ({
+      type: "chat",
+      id: m.id,
+      role: m.role,
+      content: m.content,
+    }));
+    // Restore a parked write-confirm (survives nav/reload) so the card is actionable again.
+    if (chat.pending_confirm) {
+      msgs.push({
+        type: "confirm",
+        id: `confirm-${id}`,
+        payload: chat.pending_confirm as unknown as ConfirmPayload,
+      });
+      setPendingConfirm(true);
+    }
+    setMessages(msgs);
   }
 
   function newChat() {
@@ -208,7 +223,14 @@ export default function PolarisAiPage() {
       ),
     );
     setPendingConfirm(false);
-    ws.send(JSON.stringify({ type: "copilot.confirm_response", data: { approved } }));
+    // Include conversation_id so the backend can rehydrate the parked turn on a fresh
+    // socket (after a nav/reload the in-memory pending state is gone).
+    ws.send(
+      JSON.stringify({
+        type: "copilot.confirm_response",
+        data: { approved, conversation_id: activeId },
+      }),
+    );
   }
 
   return (

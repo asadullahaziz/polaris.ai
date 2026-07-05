@@ -484,8 +484,19 @@ export type AiMessage = {
   created_at: string;
 };
 
+// The retrieve view: transcript + any parked confirm-every-write awaiting approval.
+// `pending_confirm` is the ConfirmPayload the card renders (cast at the call site), or
+// null. Non-null means a write is paused and the composer should stay gated on reopen.
+export type AiChatDetail = AiChatSummary & {
+  messages: AiMessage[];
+  pending_confirm: Record<string, unknown> | null;
+};
+
 export const listAiChats = () =>
   apiFetch("/api/ai/chats/").then((r) => json<AiChatSummary[]>(r));
+
+export const getAiChat = (id: number) =>
+  apiFetch(`/api/ai/chats/${id}/`).then((r) => json<AiChatDetail>(r));
 
 export const getAiChatMessages = (id: number) =>
   apiFetch(`/api/ai/chats/${id}/messages/`).then((r) => json<AiMessage[]>(r));

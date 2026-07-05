@@ -52,6 +52,12 @@ class AiChat(models.Model):
     )
     title = models.TextField(null=True, blank=True)  # NULL until auto-titled
     status = models.TextField(default="open", choices=AI_CHAT_STATUSES)
+    # A parked confirm-every-write turn (LangGraph interrupt), NULL when none. Holds the
+    # whole resumable pending payload {conv_id, cfg, buf, needs_title, first_body, ids,
+    # value} so the confirm card + the paused agent turn survive a page nav / reload /
+    # server restart (the checkpoint keyed by cfg.thread_id resumes the exact interrupt).
+    # Only `value` (the render payload) is ever exposed over REST.
+    pending_confirm = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

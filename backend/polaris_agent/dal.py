@@ -129,6 +129,28 @@ def _needs_title(ai_chat_id: int) -> bool:
     return AiChat.objects.filter(id=ai_chat_id, title__isnull=True).exists()
 
 
+# ---- Parked confirm-every-write turn (durable HITL, survives reload/restart) -----
+# The whole resumable pending payload lives on the AiChat row so a fresh socket can
+# rehydrate `self._pending` and resume the exact interrupt (same cfg.thread_id).
+def _save_pending_confirm(ai_chat_id: int, data: dict) -> None:
+    from ai.models import AiChat
+
+    AiChat.objects.filter(id=ai_chat_id).update(pending_confirm=data)
+
+
+def _load_pending_confirm(ai_chat_id: int) -> dict | None:
+    from ai.models import AiChat
+
+    row = AiChat.objects.filter(id=ai_chat_id).values("pending_confirm").first()
+    return (row or {}).get("pending_confirm") or None
+
+
+def _clear_pending_confirm(ai_chat_id: int) -> None:
+    from ai.models import AiChat
+
+    AiChat.objects.filter(id=ai_chat_id).update(pending_confirm=None)
+
+
 create_ai_chat = sync_to_async(_create_ai_chat)
 list_ai_chats = sync_to_async(_list_ai_chats)
 load_transcript = sync_to_async(_load_transcript)
@@ -136,6 +158,9 @@ save_ai_message = sync_to_async(_save_ai_message)
 set_title_if_empty = sync_to_async(_set_title_if_empty)
 owns_ai_chat = sync_to_async(_owns_ai_chat)
 needs_title = sync_to_async(_needs_title)
+save_pending_confirm = sync_to_async(_save_pending_confirm)
+load_pending_confirm = sync_to_async(_load_pending_confirm)
+clear_pending_confirm = sync_to_async(_clear_pending_confirm)
 
 
 # ---- Agent memory (per-principal; namespace-scoped + recency-capped, §9b) -------

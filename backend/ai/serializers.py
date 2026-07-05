@@ -21,10 +21,25 @@ class AiChatSummarySerializer(serializers.ModelSerializer):
 
 class AiChatDetailSerializer(serializers.ModelSerializer):
     messages = AiMessageSerializer(many=True, read_only=True)
+    # Only the confirm-card render payload — never the internal cfg/thread_id/buf.
+    pending_confirm = serializers.SerializerMethodField()
 
     class Meta:
         model = AiChat
-        fields = ["id", "title", "status", "created_at", "updated_at", "messages"]
+        fields = [
+            "id",
+            "title",
+            "status",
+            "created_at",
+            "updated_at",
+            "messages",
+            "pending_confirm",
+        ]
+
+    def get_pending_confirm(self, obj) -> dict | None:
+        """The parked write-confirm (`{kind, action, summary, proposal}`) so a reopened
+        session rebuilds an actionable card; NULL when nothing is awaiting approval."""
+        return (obj.pending_confirm or {}).get("value")
 
 
 class AgentMemorySerializer(serializers.ModelSerializer):
