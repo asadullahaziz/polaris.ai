@@ -356,3 +356,70 @@ async def test_parked_confirm_resumes_from_the_durable_record_on_a_fresh_graph(
     assert await dal.load_pending_confirm(chat_id) is None
 
     await close_checkpointer()
+
+
+# ============ resolved/expired confirm → durable, model-invisible transcript row =====
+@pytest.mark.django_db
+def test_confirm_outcome_row_is_visible_to_ui_but_skipped_by_the_model(user):
+    """A resolved confirm persists as a role='tool' row carrying the card payload + outcome.
+    `_load_transcript` SKIPS it (never re-fed to the model), but the REST detail exposes it
+    (via `tool_calls`) in timeline order so the FE re-renders a greyed 'Approved' card."""
+    from ai.models import AiChat
+    from ai.serializers import AiChatDetailSerializer
+
+    chat_id = dal._create_ai_chat(user.id)
+    dal._save_ai_message(chat_id, role="user", content="create a listing")
+    value = {
+        "kind": "confirm_write",
+        "action": "create_listing",
+        "summary": "Create listing",
+        "proposal": {"fields": {"address": "1 A St"}},
+    }
+    dal._save_confirm_outcome(chat_id, value, "approved")
+    dal._save_ai_message(chat_id, role="assistant", content="Done — created it")
+
+    # The model's rehydrated history skips the tool row entirely.
+    history = dal._load_transcript(chat_id)
+    assert [type(m).__name__ for m in history] == ["HumanMessage", "AIMessage"]
+
+    # The REST detail keeps it, in order, with the structured payload + resolution.
+    data = AiChatDetailSerializer(AiChat.objects.get(id=chat_id)).data
+    assert [r["role"] for r in data["messages"]] == ["user", "tool", "assistant"]
+    tc = next(r for r in data["messages"] if r["role"] == "tool")["tool_calls"]
+    assert tc["kind"] == "confirm_write" and tc["action"] == "create_listing"
+    assert tc["resolution"] == "approved"
+
+
+@pytest.mark.django_db
+def test_pending_confirm_expires_when_stale(user):
+    """A confirm nobody answers auto-expires: a fresh one is untouched; an old one is cleared
+    and leaves a durable 'expired' card so it never hangs forever."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from ai.models import AiChat
+
+    chat_id = dal._create_ai_chat(user.id)
+    value = {"kind": "confirm_write", "action": "create_listing", "summary": "x", "proposal": {}}
+
+    # Fresh (created now) → NOT expired, pointer stays.
+    dal._save_pending_confirm(
+        chat_id, {"conv_id": chat_id, "value": value, "created_at": timezone.now().isoformat()}
+    )
+    assert dal._expire_pending_confirm_if_stale(chat_id, 3600) is False
+    assert dal._load_pending_confirm(chat_id) is not None
+
+    # Old (2h ago) with a 1h TTL → expired: pointer cleared + an 'expired' outcome row.
+    dal._save_pending_confirm(
+        chat_id,
+        {
+            "conv_id": chat_id,
+            "value": value,
+            "created_at": (timezone.now() - timedelta(hours=2)).isoformat(),
+        },
+    )
+    assert dal._expire_pending_confirm_if_stale(chat_id, 3600) is True
+    assert dal._load_pending_confirm(chat_id) is None
+    tool_rows = [m for m in AiChat.objects.get(id=chat_id).messages.all() if m.role == "tool"]
+    assert any(m.tool_calls.get("resolution") == "expired" for m in tool_rows)

@@ -292,6 +292,14 @@ INNGEST_IS_PRODUCTION = env_bool("INNGEST_IS_PRODUCTION", False)
 # ---------------------------------------------------------------------------
 RESPONDER_GRACE_SECONDS = int(env("RESPONDER_GRACE_SECONDS", "45") or 45)
 
+# ---------------------------------------------------------------------------
+# Copilot confirm-every-write TTL. A pending write-confirm nobody answers auto-expires
+# after this long (lazy: enforced on reopen / next send / resume — no background job), so
+# an approval popup never hangs forever. Default 24h; env-overridable so a demo can shorten
+# it. Must stay LONGER than any future checkpointer TTL (see the deferred Redis note).
+# ---------------------------------------------------------------------------
+COPILOT_CONFIRM_TTL_SECONDS = int(env("COPILOT_CONFIRM_TTL_SECONDS", "86400") or 86400)
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

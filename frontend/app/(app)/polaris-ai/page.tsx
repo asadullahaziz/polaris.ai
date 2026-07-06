@@ -37,7 +37,12 @@ import { cn } from "@/lib/utils";
 // records the tool call itself on rehydrate).
 type LocalMsg =
   | { type: "chat"; id: number | string; role: string; content: string }
-  | { type: "confirm"; id: string; payload: ConfirmPayload; resolution?: "approved" | "declined" };
+  | {
+      type: "confirm";
+      id: string;
+      payload: ConfirmPayload;
+      resolution?: "approved" | "declined" | "expired";
+    };
 
 const SUGGESTIONS = [
   "List my listings and how long each has been on the market",
@@ -170,13 +175,22 @@ export default function PolarisAiPage() {
     setStreaming("");
     setPendingConfirm(false);
     const chat = await getAiChat(id);
-    const msgs: LocalMsg[] = chat.messages.map((m) => ({
-      type: "chat",
-      id: m.id,
-      role: m.role,
-      content: m.content,
-    }));
-    // Restore a parked write-confirm (survives nav/reload) so the card is actionable again.
+    const msgs: LocalMsg[] = chat.messages.map((m) => {
+      // A resolved/expired confirm is persisted as a role='tool' row carrying the card
+      // payload + resolution — re-render it as a greyed, non-interactive card in place.
+      const tc = m.tool_calls;
+      if (m.role === "tool" && tc && tc.kind === "confirm_write") {
+        const { resolution, ...payload } = tc;
+        return {
+          type: "confirm",
+          id: `outcome-${m.id}`,
+          payload: payload as unknown as ConfirmPayload,
+          resolution: resolution as "approved" | "declined" | "expired",
+        };
+      }
+      return { type: "chat", id: m.id, role: m.role, content: m.content };
+    });
+    // Restore a still-pending write-confirm (survives nav/reload) so it's actionable again.
     if (chat.pending_confirm) {
       msgs.push({
         type: "confirm",

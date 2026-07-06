@@ -28,6 +28,8 @@ import json
 import logging
 
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.conf import settings
+from django.utils import timezone
 from langgraph.types import Command
 
 from polaris_agent import dal
@@ -98,8 +100,14 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         try:
             if mtype == "copilot.send":
                 conv_id = data.get("conversation_id")
-                # Reject if a confirm is parked — in memory OR durably (a fresh socket after
-                # a reload has no in-memory flag) — so a new turn can't orphan the interrupt.
+                # First auto-expire a stale parked confirm (nobody answered it) so it can't
+                # block new messages forever — leaves an 'expired' card, clears the pointer.
+                if conv_id is not None:
+                    await dal.expire_pending_confirm_if_stale(
+                        conv_id, settings.COPILOT_CONFIRM_TTL_SECONDS
+                    )
+                # Reject if a confirm is still parked — in memory OR durably (a fresh socket
+                # after a reload has no in-memory flag) — so a new turn can't orphan it.
                 if self._pending is not None or (
                     conv_id is not None and await dal.load_pending_confirm(conv_id)
                 ):
@@ -176,13 +184,28 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _resume(self, approved: bool, conv_id=None) -> None:
         p = self._pending
         if not p and conv_id is not None:
-            # Fresh socket after a nav/reload: rehydrate the parked turn from the DB so we
-            # can resume the exact interrupt (checkpoint keyed by the stored cfg.thread_id).
+            # Fresh socket after a nav/reload. If the parked confirm expired while nobody
+            # answered, refuse to resume — its checkpoint is stale scratch and approving a
+            # long-dead proposal would be a "zombie" write. Expiry leaves an 'expired' card.
+            if await dal.expire_pending_confirm_if_stale(
+                conv_id, settings.COPILOT_CONFIRM_TTL_SECONDS
+            ):
+                await self._send(
+                    "copilot.error", {"detail": "this request expired — please ask again"}
+                )
+                return
+            # Otherwise rehydrate the parked turn from the DB so we can resume the exact
+            # interrupt (checkpoint keyed by the stored cfg.thread_id).
             p = await dal.load_pending_confirm(conv_id)
         if not p:
             await self._send("copilot.error", {"detail": "no pending confirmation"})
             return
         self._pending = None
+        # Record the decision as a durable, model-invisible transcript row BEFORE re-pumping,
+        # so it lands between the user's request and the assistant's reply on rehydrate.
+        await dal.save_confirm_outcome(
+            p["conv_id"], p["value"], "approved" if approved else "declined"
+        )
         ids = p["ids"]
         resume_val = {"approved": approved}
         # One pending write → resume with the bare value; multiple (parallel tool calls
@@ -209,6 +232,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             "first_body": first_body,
             "ids": [i.id for i in interrupts],
             "value": interrupts[0].value,  # the confirm-card render payload
+            "created_at": timezone.now().isoformat(),  # TTL clock for lazy expiry
         }
         # Persist the whole resumable payload so the card + parked turn survive a nav /
         # reload / restart. Everything here is JSON-serializable (cfg/buf/ids/value).

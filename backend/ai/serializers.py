@@ -10,7 +10,9 @@ from .models import AgentMemory, AiChat, AiMessage, OutreachCampaign, OutreachRe
 class AiMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = AiMessage
-        fields = ["id", "role", "content", "created_at"]
+        # `tool_calls` carries the structured payload for a resolved/expired confirm row
+        # (role='tool') so the FE can re-render a greyed Approved/Declined/Expired card.
+        fields = ["id", "role", "content", "tool_calls", "created_at"]
 
 
 class AiChatSummarySerializer(serializers.ModelSerializer):

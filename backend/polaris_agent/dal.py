@@ -151,6 +151,62 @@ def _clear_pending_confirm(ai_chat_id: int) -> None:
     AiChat.objects.filter(id=ai_chat_id).update(pending_confirm=None)
 
 
+# ---- Resolved/expired confirm → a durable, model-invisible transcript artifact ---
+def _save_confirm_outcome(ai_chat_id: int, value: dict, resolution: str) -> int:
+    """Persist a RESOLVED write-confirm so a reopened chat re-renders a greyed
+    'Approved/Declined/Expired' card in the timeline. Stored as role='tool', which
+    `_load_transcript` SKIPS — visible in the UI, never re-fed to the model. The structured
+    card payload + outcome ride in `tool_calls` (the FE reads it back)."""
+    from django.utils import timezone
+
+    from ai.models import AiChat, AiMessage
+
+    label = {"approved": "Approved", "declined": "Declined", "expired": "Expired"}.get(
+        resolution, resolution.title()
+    )
+    summary = (value or {}).get("summary") or (value or {}).get("action") or "write"
+    msg = AiMessage.objects.create(
+        ai_chat_id=ai_chat_id,
+        role="tool",
+        content=f"{label}: {summary}",
+        tool_calls={**(value or {}), "resolution": resolution},
+    )
+    AiChat.objects.filter(id=ai_chat_id).update(updated_at=timezone.now())
+    return msg.id
+
+
+def _expire_pending_confirm_if_stale(ai_chat_id: int, ttl_seconds: int) -> bool:
+    """If a parked confirm is older than `ttl_seconds`, expire it: leave a durable 'expired'
+    card and clear the pending pointer. Returns True if it expired. Lazy — called on reopen /
+    next send / resume, so no background job is needed (the orphaned LangGraph checkpoint is
+    the deferred Redis/prune concern, not a correctness issue here)."""
+    from datetime import datetime
+    from datetime import timezone as dt_timezone
+
+    from django.utils import timezone
+
+    from ai.models import AiChat
+
+    row = AiChat.objects.filter(id=ai_chat_id).values("pending_confirm").first()
+    pending = (row or {}).get("pending_confirm")
+    if not pending:
+        return False
+    created_raw = pending.get("created_at")
+    if not created_raw:
+        return False  # legacy record without a stamp — never auto-expire
+    try:
+        created = datetime.fromisoformat(created_raw)
+    except ValueError:
+        return False
+    if created.tzinfo is None:  # guard a naive stamp
+        created = created.replace(tzinfo=dt_timezone.utc)
+    if (timezone.now() - created).total_seconds() < ttl_seconds:
+        return False
+    _save_confirm_outcome(ai_chat_id, pending.get("value") or {}, "expired")
+    AiChat.objects.filter(id=ai_chat_id).update(pending_confirm=None)
+    return True
+
+
 create_ai_chat = sync_to_async(_create_ai_chat)
 list_ai_chats = sync_to_async(_list_ai_chats)
 load_transcript = sync_to_async(_load_transcript)
@@ -161,6 +217,8 @@ needs_title = sync_to_async(_needs_title)
 save_pending_confirm = sync_to_async(_save_pending_confirm)
 load_pending_confirm = sync_to_async(_load_pending_confirm)
 clear_pending_confirm = sync_to_async(_clear_pending_confirm)
+save_confirm_outcome = sync_to_async(_save_confirm_outcome)
+expire_pending_confirm_if_stale = sync_to_async(_expire_pending_confirm_if_stale)
 
 
 # ---- Agent memory (per-principal; namespace-scoped + recency-capped, §9b) -------

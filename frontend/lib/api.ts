@@ -481,6 +481,8 @@ export type AiMessage = {
   id: number;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  // Set on a resolved/expired confirm row (role='tool'): the card payload + resolution.
+  tool_calls?: Record<string, unknown> | null;
   created_at: string;
 };
 

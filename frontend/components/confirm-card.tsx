@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, ShieldQuestion, X } from "lucide-react";
+import { AlertTriangle, Check, Clock, ShieldQuestion, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -108,7 +108,7 @@ export function ConfirmCard({
   onRespond,
 }: {
   payload: ConfirmPayload;
-  resolution?: "approved" | "declined";
+  resolution?: "approved" | "declined" | "expired";
   onRespond?: (approved: boolean) => void;
 }) {
   const { action, summary, proposal } = payload;
@@ -138,8 +138,10 @@ export function ConfirmCard({
           <Badge variant={resolution === "approved" ? "default" : "outline"}>
             {resolution === "approved" ? (
               <Check className="size-3" />
-            ) : (
+            ) : resolution === "declined" ? (
               <X className="size-3" />
+            ) : (
+              <Clock className="size-3" />
             )}
             {resolution}
           </Badge>

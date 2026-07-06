@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 import inngest
+from django.conf import settings
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.generics import ListAPIView
@@ -19,6 +20,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from orchestration.client import inngest_client
+from polaris_agent import dal
 
 from . import outreach_service
 from .models import AgentMemory, AiChat, OutreachCampaign
@@ -50,6 +52,17 @@ class AiChatViewSet(
 
     def get_serializer_class(self):
         return AiChatDetailSerializer if self.action == "retrieve" else AiChatSummarySerializer
+
+    def retrieve(self, request, *args, **kwargs):
+        """Rehydrate one session. Lazily expire a parked confirm nobody answered first, so a
+        reopened chat shows a greyed 'expired' card (not a live one) and its composer isn't
+        gated forever — no background job needed."""
+        instance = self.get_object()
+        if dal._expire_pending_confirm_if_stale(
+            instance.id, settings.COPILOT_CONFIRM_TTL_SECONDS
+        ):
+            instance = self.get_object()  # re-load so messages + pending_confirm are current
+        return Response(self.get_serializer(instance).data)
 
     @action(detail=True, methods=["get"])
     def messages(self, request, pk=None):
