@@ -58,7 +58,7 @@ def test_create_user_normalizes_and_hashes():
     # The post_save signal created the companion profile.
     assert user.profile is not None
     assert user.profile.agent_autonomy == "draft_for_approval"
-    assert user.profile.auto_reply_when_away is False
+    assert user.profile.auto_reply_when_away is True
 
 
 @pytest.mark.django_db

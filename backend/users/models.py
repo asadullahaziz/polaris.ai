@@ -102,7 +102,7 @@ class UserProfile(models.Model):
     #                          user's last human message, before the agent escalates
     #                          instead. Bounds the agent↔agent away-cover loop; read
     #                          as the default `n` in `reply_cap_reached` (P4).
-    auto_reply_when_away = models.BooleanField(default=False)
+    auto_reply_when_away = models.BooleanField(default=True)
     agent_autonomy = models.CharField(
         max_length=32, default="draft_for_approval", choices=AUTONOMY_CHOICES
     )
