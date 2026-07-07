@@ -141,13 +141,24 @@ def copilot_tools(principal_id: int) -> list:
         return await dal.list_seller_listings(principal_id)
 
     @tool
+    async def browse_listings(q: str | None = None, limit: int = 20) -> list:
+        """Browse the marketplace: ACTIVE listings from ALL sellers (id, title, asking
+        price, address, seller name, owned_by_principal). Optional q filters by
+        title/description/address fragment. Use when the user asks what's for sale,
+        wants to evaluate someone else's listing, or hunts for deals."""
+        return await dal.browse_listings(principal_id, q, limit)
+
+    @tool
     async def get_listing(listing_id: int) -> dict:
-        """Full detail for one of the user's listings: every property + the deal mandate."""
+        """Full detail for any listing visible to the user — their own (any status) or
+        anyone's active one. The deal mandate is included ONLY for the user's own
+        listings; other sellers' mandates are private and never present."""
         return await dal.get_listing_detail(listing_id, principal_id)
 
     @tool
     async def estimate_market_value(listing_id: int, after_repair: bool = False) -> dict:
-        """Estimate a value range for one of the user's listings from comparable sales.
+        """Estimate a value range from comparable sales for any listing visible to the
+        user (their own, or another seller's active one — market data, not private).
         Set after_repair=True for ARV (comped against good-condition sales). Returns
         low/point/high, the $/sqft basis, and the comps used."""
         res = await dal.estimate_for_listing(listing_id, principal_id, after_repair)
@@ -157,8 +168,9 @@ def copilot_tools(principal_id: int) -> list:
 
     @tool
     async def get_comps(listing_id: int) -> dict:
-        """Return the nearest recent comparable SOLD properties for one of the user's
-        listings, plus how far the search had to reach."""
+        """Return the nearest recent comparable SOLD properties for any listing visible
+        to the user (their own, or another seller's active one), plus how far the
+        search had to reach."""
         res = await dal.comps_for_listing(listing_id, principal_id)
         if "comps" in res:
             res["comps"] = res["comps"][:8]
@@ -596,6 +608,7 @@ def copilot_tools(principal_id: int) -> list:
         lookup_property,
         search_properties,
         list_my_listings,
+        browse_listings,
         get_listing,
         estimate_market_value,
         get_comps,

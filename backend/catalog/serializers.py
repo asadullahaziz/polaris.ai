@@ -68,10 +68,13 @@ class MandateSerializer(serializers.Serializer):
 
 
 class ListingSummarySerializer(serializers.ModelSerializer):
-    """The `/listings` card view: headline fields + primary property + cover photo."""
+    """The `/listings` card view: headline fields + primary property + cover photo.
+    Cross-user visible (marketplace), so it carries the seller's public identity and
+    nothing seller-private."""
 
     primary_property = serializers.SerializerMethodField()
     cover_url = serializers.SerializerMethodField()
+    seller = serializers.SerializerMethodField()
 
     class Meta:
         model = Listing
@@ -84,8 +87,12 @@ class ListingSummarySerializer(serializers.ModelSerializer):
             "created_at",
             "primary_property",
             "cover_url",
+            "seller",
         ]
         read_only_fields = fields
+
+    def get_seller(self, obj):
+        return {"id": obj.seller_id, "name": obj.seller.display_name}
 
     def _first_lp(self, obj):
         return sorted(obj.listingproperty_set.all(), key=lambda lp: lp.sort_order)[:1]
@@ -102,11 +109,14 @@ class ListingSummarySerializer(serializers.ModelSerializer):
 
 
 class ListingDetailSerializer(serializers.ModelSerializer):
-    """The `/listings/[id]` detail: every property + media + the deal mandate."""
+    """The `/listings/[id]` detail: every property + media + the deal mandate.
+    Cross-user visible for active listings — the mandate (floor/ceiling/instructions)
+    is seller-PRIVATE and only serialized for the owner; everyone else gets null."""
 
     properties = serializers.SerializerMethodField()
     media = ListingMediaSerializer(many=True, read_only=True)
     mandate = serializers.SerializerMethodField()
+    seller = serializers.SerializerMethodField()
 
     class Meta:
         model = Listing
@@ -122,6 +132,7 @@ class ListingDetailSerializer(serializers.ModelSerializer):
             "properties",
             "media",
             "mandate",
+            "seller",
         ]
         read_only_fields = fields
 
@@ -129,7 +140,14 @@ class ListingDetailSerializer(serializers.ModelSerializer):
         lps = sorted(obj.listingproperty_set.all(), key=lambda lp: lp.sort_order)
         return ListingPropertySerializer(lps, many=True).data
 
+    def get_seller(self, obj):
+        return {"id": obj.seller_id, "name": obj.seller.display_name}
+
     def get_mandate(self, obj):
+        # Private-by-default: without a request context proving ownership, no mandate.
+        request = self.context.get("request")
+        if request is None or request.user.id != obj.seller_id:
+            return None
         from .services import get_mandate_for_listing
 
         return get_mandate_for_listing(obj)

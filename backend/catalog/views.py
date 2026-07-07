@@ -8,6 +8,7 @@ the P2 copilot tools call), so the agent and the API stay in lockstep.
 
 from __future__ import annotations
 
+from django.db.models import Q
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -97,11 +98,24 @@ class ListingViewSet(
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return (
-            Listing.objects.filter(seller=self.request.user)
+        qs = (
+            Listing.objects.select_related("seller")
             .order_by("-created_at")
             .prefetch_related("listingproperty_set__property", "media")
         )
+        if self.action in ("list", "retrieve"):
+            # Marketplace visibility: the user's own listings (any status) + everyone
+            # else's active ones. ?mine=1 narrows the list back to own-only. Mutations
+            # and the seller-only actions (valuation/comps/mandate) stay owner-scoped
+            # below — and the detail serializer withholds the mandate from non-owners.
+            if self.action == "list" and self.request.query_params.get("mine") in (
+                "1",
+                "true",
+                "True",
+            ):
+                return qs.filter(seller=self.request.user)
+            return qs.filter(Q(seller=self.request.user) | Q(status="active"))
+        return qs.filter(seller=self.request.user)
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -117,7 +131,7 @@ class ListingViewSet(
         ser.is_valid(raise_exception=True)
         listing = services.create_listing(request.user, ser.validated_data)
         detail = self.get_queryset().get(id=listing.id)
-        return Response(ListingDetailSerializer(detail).data, status=201)
+        return Response(ListingDetailSerializer(detail, context={"request": request}).data, status=201)
 
     def update(self, request, *args, **kwargs):
         listing = self.get_object()  # 404s if not owned
@@ -125,7 +139,7 @@ class ListingViewSet(
         ser.is_valid(raise_exception=True)
         services.update_listing(listing, ser.validated_data)
         detail = self.get_queryset().get(id=listing.id)
-        return Response(ListingDetailSerializer(detail).data)
+        return Response(ListingDetailSerializer(detail, context={"request": request}).data)
 
     def _first_property(self, listing):
         lp = listing.listingproperty_set.select_related("property").order_by("sort_order").first()

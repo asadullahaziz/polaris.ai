@@ -110,12 +110,54 @@ def test_create_list_detail_and_mandate_roundtrip(user):
 
 @pytest.mark.django_db
 def test_listing_seams_are_owner_scoped(user, other):
+    # Copilot-created listings start as DRAFTS — invisible to anyone but the owner.
     lid = dal._create_listing(user.id, {"address": "1 A St", "asking_price": 100000})["listing_id"]
     assert "error" in dal._get_listing_detail(lid, other.id)
     assert "error" in dal._set_mandate_for_listing(lid, other.id, {"floor_price": 1})
     assert "error" in dal._estimate_for_listing(lid, other.id, False)
     assert "error" in dal._rank_buyers(lid, other.id)
     assert "error" in dal._assess_deal_for_listing(lid, other.id, None)
+
+    # Even once ACTIVE (publicly visible), the seller-side seams stay owner-only.
+    dal._update_listing(lid, user.id, {"status": "active"})
+    assert "error" in dal._set_mandate_for_listing(lid, other.id, {"floor_price": 1})
+    assert "error" in dal._get_mandate_for_listing(lid, other.id)
+    assert "error" in dal._rank_buyers(lid, other.id)
+    assert "error" in dal._assess_deal_for_listing(lid, other.id, None)
+
+
+@pytest.mark.django_db
+def test_marketplace_reads_cover_active_listings_without_private_mandate(user, other):
+    lid = dal._create_listing(
+        user.id, {"address": "1 A St", "asking_price": 100000, "title": "Starter home"}
+    )["listing_id"]
+    dal._set_mandate_for_listing(lid, user.id, {"floor_price": 90000})
+
+    # Draft → not browsable, not readable by the other user.
+    assert dal._browse_listings(other.id) == []
+    assert "error" in dal._get_listing_detail(lid, other.id)
+
+    dal._update_listing(lid, user.id, {"status": "active"})
+
+    # Browsable with seller identity + ownership flag.
+    rows = dal._browse_listings(other.id)
+    assert [r["listing_id"] for r in rows] == [lid]
+    assert rows[0]["owned_by_principal"] is False and rows[0]["seller_name"] == "Sal Seller"
+    assert dal._browse_listings(user.id)[0]["owned_by_principal"] is True
+    # q filters by title/address fragment.
+    assert dal._browse_listings(other.id, q="starter")[0]["listing_id"] == lid
+    assert dal._browse_listings(other.id, q="zzz-no-match") == []
+
+    # Detail is readable, but the PRIVATE mandate slot does not exist at all (airlock:
+    # no empty slot to voice) — while the owner still gets it.
+    detail = dal._get_listing_detail(lid, other.id)
+    assert detail["owned_by_principal"] is False
+    assert "mandate" not in detail
+    assert dal._get_listing_detail(lid, user.id)["mandate"]["exists"] is True
+
+    # Valuation/comps (market data) unlock for the visible listing: the visibility
+    # gate passes; the engine's no-comps degradation is its own concern.
+    assert dal._get_listing_first_property(lid, other.id) is not None
 
 
 @pytest.mark.django_db

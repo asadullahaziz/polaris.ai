@@ -263,3 +263,53 @@ def test_dedup_on_conflict_is_a_no_op(pair, monkeypatch):
     assert r1["status"] == "sent"
     assert r2["status"] == "duplicate"
     assert Message.objects.filter(chat_id=chat.id, kind="agent").count() == 1
+
+
+# ============== the grace-window guard (chat/functions.thread_inbound) ==============
+class _StubStep:
+    """Records wait_for_event calls; returns the canned focus event (None = timeout)."""
+
+    def __init__(self, focused=None):
+        self.calls = 0
+        self._focused = focused
+
+    async def wait_for_event(self, *a, **kw):
+        self.calls += 1
+        return self._focused
+
+
+class _StubCtx:
+    def __init__(self, data, step):
+        from types import SimpleNamespace
+
+        self.event = SimpleNamespace(data=data)
+        self.step = step
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_zero_grace_skips_the_debounce_instead_of_crashing(settings):
+    """RESPONDER_GRACE_SECONDS=0 means 'reply immediately': Inngest rejects sub-second
+    wait_for_event timeouts (FunctionConfigInvalidError), so the handler must skip the
+    wait entirely — the regression that silenced every away-reply."""
+    from chat.functions import thread_inbound
+
+    settings.RESPONDER_GRACE_SECONDS = 0
+    step = _StubStep()
+    # ._handler = the raw coroutine behind the Inngest Function wrapper.
+    res = await thread_inbound._handler(
+        _StubCtx({"chat_id": 999_999, "inbound_message_id": 1}, step)
+    )
+    assert step.calls == 0  # never armed a sub-second wait
+    assert res == {"skipped": "chat not found"}  # got past the debounce to the plan
+
+
+async def test_grace_window_still_stands_down_on_focus(settings):
+    settings.RESPONDER_GRACE_SECONDS = 45
+    from chat.functions import thread_inbound
+
+    step = _StubStep(focused={"data": {"chat_id": 7, "user_id": 1}})
+    res = await thread_inbound._handler(
+        _StubCtx({"chat_id": 7, "inbound_message_id": 1}, step)
+    )
+    assert step.calls == 1
+    assert res == {"stood_down": "human present within grace"}

@@ -310,17 +310,52 @@ def _list_seller_listings(seller_id: int) -> list[dict]:
     ]
 
 
+def _visible_listing_q(principal_id: int):
+    """Marketplace visibility (same rule as the REST ListingViewSet): the principal's
+    own listings in any status + everyone else's ACTIVE ones."""
+    from django.db.models import Q
+
+    return Q(seller_id=principal_id) | Q(status="active")
+
+
+def _browse_listings(principal_id: int, q: str | None = None, limit: int = 20) -> list[dict]:
+    from catalog.models import Listing
+
+    qs = (
+        Listing.objects.filter(status="active")
+        .select_related("seller")
+        .order_by("-created_at")
+        .prefetch_related("listingproperty_set__property")
+    )
+    if q:
+        from django.db.models import Q
+
+        qs = qs.filter(
+            Q(title__icontains=q)
+            | Q(description__icontains=q)
+            | Q(listingproperty__property__address_raw__icontains=q)
+        ).distinct()
+    rows = []
+    for lst in qs[: max(1, min(int(limit), 50))]:
+        row = _listing_summary_row(lst)
+        row["seller_name"] = lst.seller.display_name
+        row["owned_by_principal"] = lst.seller_id == principal_id
+        rows.append(row)
+    return rows
+
+
 def _get_listing_detail(listing_id: int, seller_id: int) -> dict:
     from catalog import services
     from catalog.models import Listing
 
     lst = (
-        Listing.objects.filter(id=listing_id, seller_id=seller_id)
+        Listing.objects.filter(_visible_listing_q(seller_id), id=listing_id)
+        .select_related("seller")
         .prefetch_related("listingproperty_set__property")
         .first()
     )
     if lst is None:
-        return {"error": f"listing {listing_id} not found or not yours"}
+        return {"error": f"listing {listing_id} not found or not visible to you"}
     props = []
     for lp in lst.listingproperty_set.select_related("property").order_by("sort_order"):
         p = lp.property
@@ -336,7 +371,8 @@ def _get_listing_detail(listing_id: int, seller_id: int) -> dict:
                 "asking_price": float(lp.asking_price) if lp.asking_price is not None else None,
             }
         )
-    return {
+    owned = lst.seller_id == seller_id
+    detail = {
         "listing_id": lst.id,
         "title": lst.title,
         "description": lst.description,
@@ -344,8 +380,14 @@ def _get_listing_detail(listing_id: int, seller_id: int) -> dict:
         "bundle_type": lst.bundle_type,
         "asking_price": float(lst.asking_price) if lst.asking_price is not None else None,
         "properties": props,
-        "mandate": services.get_mandate_for_listing(lst),
+        "seller_name": lst.seller.display_name,
+        "owned_by_principal": owned,
     }
+    # The mandate (floor/ceiling/instructions) is seller-PRIVATE — the airlock rule:
+    # another seller's listing gets no mandate slot at all, not an empty one.
+    if owned:
+        detail["mandate"] = services.get_mandate_for_listing(lst)
+    return detail
 
 
 def _create_listing(seller_id: int, fields: dict) -> dict:
@@ -404,10 +446,17 @@ def _update_listing(listing_id: int, seller_id: int, fields: dict) -> dict:
 
 
 def _get_listing_first_property(listing_id: int, seller_id: int):
+    """First property of any listing VISIBLE to the principal (own or active) — drives
+    estimate/comps, which are market data, not seller-private."""
+    from django.db.models import Q
+
     from catalog.models import ListingProperty
 
     lp = (
-        ListingProperty.objects.filter(listing_id=listing_id, listing__seller_id=seller_id)
+        ListingProperty.objects.filter(
+            Q(listing__seller_id=seller_id) | Q(listing__status="active"),
+            listing_id=listing_id,
+        )
         .select_related("property")
         .order_by("sort_order")
         .first()
@@ -420,7 +469,7 @@ def _estimate_for_listing(listing_id: int, seller_id: int, arv: bool) -> dict:
 
     prop = _get_listing_first_property(listing_id, seller_id)
     if prop is None:
-        return {"error": f"listing {listing_id} not found or not yours"}
+        return {"error": f"listing {listing_id} not found or not visible to you"}
     result = estimate_value(prop, arv=arv)
     result["subject"] = {"address": prop.address_raw, "beds": prop.beds, "sqft": prop.sqft}
     return result
@@ -431,7 +480,7 @@ def _comps_for_listing(listing_id: int, seller_id: int) -> dict:
 
     prop = _get_listing_first_property(listing_id, seller_id)
     if prop is None:
-        return {"error": f"listing {listing_id} not found or not yours"}
+        return {"error": f"listing {listing_id} not found or not visible to you"}
     return get_comps(prop)
 
 
@@ -464,6 +513,7 @@ def _set_mandate_for_listing(listing_id: int, seller_id: int, fields: dict) -> d
 property_lookup = sync_to_async(_property_lookup)
 search_properties = sync_to_async(_search_properties)
 list_seller_listings = sync_to_async(_list_seller_listings)
+browse_listings = sync_to_async(_browse_listings)
 get_listing_detail = sync_to_async(_get_listing_detail)
 create_listing = sync_to_async(_create_listing)
 update_listing = sync_to_async(_update_listing)

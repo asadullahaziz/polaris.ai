@@ -92,14 +92,18 @@ async def thread_inbound(ctx: inngest.Context) -> dict:
     inbound_id = int(ctx.event.data["inbound_message_id"])
 
     # (1) Presence grace / debounce. Any chat.focus / typing on THIS chat → stand down.
-    focused = await ctx.step.wait_for_event(
-        "await-focus",
-        event="chat/focused",
-        if_exp=f"async.data.chat_id == {chat_id}",
-        timeout=_grace(),
-    )
-    if focused is not None:
-        return {"stood_down": "human present within grace"}
+    # Inngest rejects sub-second waits, so a grace of 0 (a valid demo setting) means
+    # "no debounce" — skip the wait; the presence re-check below still guards.
+    grace = _grace()
+    if grace >= dt.timedelta(seconds=1):
+        focused = await ctx.step.wait_for_event(
+            "await-focus",
+            event="chat/focused",
+            if_exp=f"async.data.chat_id == {chat_id}",
+            timeout=grace,
+        )
+        if focused is not None:
+            return {"stood_down": "human present within grace"}
 
     plan = await dal.responder_plan(chat_id, inbound_id)
     if "skip" in plan:

@@ -54,7 +54,7 @@ import {
   type Property,
   type Valuation,
 } from "@/lib/api";
-import { fmtDate, fmtMoney } from "@/lib/hooks";
+import { fmtDate, fmtMoney, useMe } from "@/lib/hooks";
 
 type BundleType = "single" | "package" | "portfolio";
 
@@ -339,6 +339,7 @@ function DealSettingsCard({ data }: { data: ListingDetail }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const mandate = data.mandate;
+  if (!mandate) return null; // seller-private — absent on other sellers' listings
 
   const initial: MandateInput | undefined = mandate.exists
     ? {
@@ -422,6 +423,7 @@ export default function ListingDetailPage() {
   const id = Number(params.id);
   const [editOpen, setEditOpen] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const { data: me } = useMe();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["listing", id],
@@ -458,6 +460,7 @@ export default function ListingDetailPage() {
 
   const address = data.properties[0]?.property.address_raw ?? null;
   const title = data.title || address || `Listing #${data.id}`;
+  const isMine = data.seller.id === me?.id;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -478,17 +481,24 @@ export default function ListingDetailPage() {
             {address && data.title && (
               <p className="text-sm text-muted-foreground">{address}</p>
             )}
+            {!isMine && (
+              <p className="text-sm text-muted-foreground">
+                Listed by {data.seller.name}
+              </p>
+            )}
             <p className="mt-1 text-3xl font-semibold">
               {fmtMoney(data.asking_price)}
             </p>
           </div>
-          <Button variant="outline" onClick={() => setEditOpen(true)}>
-            Edit
-          </Button>
+          {isMine && (
+            <Button variant="outline" onClick={() => setEditOpen(true)}>
+              Edit
+            </Button>
+          )}
         </div>
 
         <div className="grid gap-6 lg:grid-cols-3">
-          <div className="space-y-6 lg:col-span-2">
+          <div className={`space-y-6 ${isMine ? "lg:col-span-2" : "lg:col-span-3"}`}>
             {data.description && (
               <p className="whitespace-pre-wrap text-sm">{data.description}</p>
             )}
@@ -525,13 +535,17 @@ export default function ListingDetailPage() {
             )}
           </div>
 
-          <div className="space-y-6">
-            <ValuationCard id={data.id} />
-            <DealSettingsCard data={data} />
-          </div>
+          {isMine && (
+            <div className="space-y-6">
+              <ValuationCard id={data.id} />
+              <DealSettingsCard data={data} />
+            </div>
+          )}
         </div>
 
-        <EditListingDialog data={data} open={editOpen} onOpenChange={setEditOpen} key={data.updated_at} />
+        {isMine && (
+          <EditListingDialog data={data} open={editOpen} onOpenChange={setEditOpen} key={data.updated_at} />
+        )}
 
         <Dialog open={!!lightbox} onOpenChange={(o) => !o && setLightbox(null)}>
           <DialogContent className="max-w-3xl p-2 sm:max-w-3xl">

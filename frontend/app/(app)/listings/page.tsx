@@ -3,13 +3,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { Building2, Plus } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { listListings, type ListingSummary, type Property } from "@/lib/api";
-import { fmtMoney } from "@/lib/hooks";
+import { fmtMoney, useMe } from "@/lib/hooks";
 
 function statusVariant(s: string): "default" | "secondary" | "outline" {
   if (s === "active") return "default";
@@ -27,7 +29,7 @@ function attrsLine(p: Property | null): string {
   return parts.join(" · ");
 }
 
-function ListingCard({ l }: { l: ListingSummary }) {
+function ListingCard({ l, isMine }: { l: ListingSummary; isMine: boolean }) {
   const title = l.title || l.primary_property?.address_raw || `Listing #${l.id}`;
   const attrs = attrsLine(l.primary_property);
   return (
@@ -49,6 +51,7 @@ function ListingCard({ l }: { l: ListingSummary }) {
           <div className="flex items-start justify-between gap-2">
             <p className="truncate font-medium">{title}</p>
             <div className="flex shrink-0 gap-1">
+              {isMine && <Badge variant="secondary">Yours</Badge>}
               {l.bundle_type !== "single" && (
                 <Badge variant="outline" className="capitalize">
                   {l.bundle_type}
@@ -66,6 +69,11 @@ function ListingCard({ l }: { l: ListingSummary }) {
           )}
           {attrs && <p className="text-sm text-muted-foreground">{attrs}</p>}
           <p className="text-lg font-semibold">{fmtMoney(l.asking_price)}</p>
+          {!isMine && (
+            <p className="truncate text-xs text-muted-foreground">
+              Listed by {l.seller.name}
+            </p>
+          )}
         </CardContent>
       </Card>
     </Link>
@@ -73,10 +81,17 @@ function ListingCard({ l }: { l: ListingSummary }) {
 }
 
 export default function ListingsPage() {
+  const { data: me } = useMe();
+  const [tab, setTab] = useState<"all" | "mine">("all");
   const { data, isLoading, error } = useQuery({
     queryKey: ["listings"],
     queryFn: listListings,
   });
+
+  // The marketplace response is a superset (own listings in ANY status + others'
+  // active ones), so "My listings" is a client-side cut of the same query.
+  const mine = (data ?? []).filter((l) => l.seller.id === me?.id);
+  const shown = tab === "mine" ? mine : data ?? [];
 
   return (
     <div className="h-full overflow-y-auto">
@@ -90,6 +105,21 @@ export default function ListingsPage() {
           </Button>
         </div>
 
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as "all" | "mine")}
+          className="mb-4"
+        >
+          <TabsList>
+            <TabsTrigger value="all">
+              All listings{data ? ` (${data.length})` : ""}
+            </TabsTrigger>
+            <TabsTrigger value="mine">
+              My listings{data ? ` (${mine.length})` : ""}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
         {isLoading ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[...Array(6)].map((_, i) => (
@@ -98,29 +128,31 @@ export default function ListingsPage() {
           </div>
         ) : error ? (
           <p className="text-sm text-muted-foreground">
-            Couldn&apos;t load your listings. Try again in a moment.
+            Couldn&apos;t load listings. Try again in a moment.
           </p>
-        ) : !data || data.length === 0 ? (
+        ) : shown.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
               <Building2 className="size-10 text-muted-foreground" />
               <div>
-                <p className="font-medium">No listings yet</p>
+                <p className="font-medium">
+                  {tab === "mine" ? "No listings yet" : "Nothing on the market yet"}
+                </p>
                 <p className="text-sm text-muted-foreground">
                   List a property and let your AI agent find the right buyers.
                 </p>
               </div>
               <Button asChild>
                 <Link href="/listings/new">
-                  <Plus /> Create your first listing
+                  <Plus /> {tab === "mine" ? "Create your first listing" : "New listing"}
                 </Link>
               </Button>
             </CardContent>
           </Card>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {data.map((l) => (
-              <ListingCard key={l.id} l={l} />
+            {shown.map((l) => (
+              <ListingCard key={l.id} l={l} isMine={l.seller.id === me?.id} />
             ))}
           </div>
         )}

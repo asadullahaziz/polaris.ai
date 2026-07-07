@@ -57,7 +57,7 @@ def test_create_user_normalizes_and_hashes():
     assert user.is_email_verified is False
     # The post_save signal created the companion profile.
     assert user.profile is not None
-    assert user.profile.agent_autonomy == "draft_for_approval"
+    assert user.profile.agent_autonomy == "auto_send"
     assert user.profile.auto_reply_when_away is True
 
 
@@ -112,7 +112,7 @@ def test_register_verify_login_flow(client):
     assert me.status_code == 200
     assert me.data["email"] == "buyer@example.com"
     assert "profile" in me.data
-    assert me.data["profile"]["agent_autonomy"] == "draft_for_approval"
+    assert me.data["profile"]["agent_autonomy"] == "auto_send"
 
 
 @pytest.mark.django_db

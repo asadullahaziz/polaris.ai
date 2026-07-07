@@ -153,17 +153,71 @@ def test_listing_requires_at_least_one_property(client):
     assert resp.status_code == 400
 
 
-@pytest.mark.django_db
-def test_listings_are_scoped_to_owner(client):
+@pytest.fixture
+def other_client(db):
     other = User.objects.create_user(
-        email="other@x.com", password="pw-12345678", is_email_verified=True
+        email="other@x.com", password="pw-12345678", is_email_verified=True, full_name="Other"
     )
-    other_client = APIClient()
-    other_client.force_authenticate(user=other)
-    created = client.post(
+    c = APIClient()
+    c.force_authenticate(user=other)
+    return c
+
+
+@pytest.mark.django_db
+def test_marketplace_visibility(client, other_client):
+    """Listings are a marketplace: everyone sees ACTIVE listings; drafts stay private.
+    The mandate (floor/ceiling/instructions) is serialized only for the owner."""
+    active = client.post(
+        LISTINGS,
+        {
+            "asking_price": "400000",
+            "properties": [{"address": "1 A St"}],
+            "mandate": {"floor_price": "380000"},
+        },
+        format="json",
+    ).data  # status defaults to active
+    draft = client.post(
+        LISTINGS,
+        {"asking_price": "200000", "status": "draft", "properties": [{"address": "2 B St"}]},
+        format="json",
+    ).data
+
+    # The other user's list shows the active listing (with seller identity), not the draft.
+    rows = other_client.get(LISTINGS).data
+    ids = {r["id"] for r in rows}
+    assert active["id"] in ids and draft["id"] not in ids
+    row = next(r for r in rows if r["id"] == active["id"])
+    assert row["seller"]["name"] == "Owner"
+
+    # ?mine=1 narrows back to own-only.
+    assert other_client.get(LISTINGS, {"mine": "1"}).data == []
+    mine = client.get(LISTINGS, {"mine": "1"}).data
+    assert {r["id"] for r in mine} == {active["id"], draft["id"]}
+
+    # Non-owner detail: visible for active, but the PRIVATE mandate is withheld.
+    det = other_client.get(f"{LISTINGS}{active['id']}/")
+    assert det.status_code == 200
+    assert det.data["mandate"] is None
+    assert det.data["seller"]["name"] == "Owner"
+    assert other_client.get(f"{LISTINGS}{draft['id']}/").status_code == 404
+
+    # The owner still gets their mandate on the same route.
+    own = client.get(f"{LISTINGS}{active['id']}/")
+    assert own.data["mandate"]["exists"] is True
+    assert own.data["mandate"]["floor_price"] == 380000.0
+
+
+@pytest.mark.django_db
+def test_mutations_and_seller_tools_stay_owner_scoped(client, other_client):
+    lid = client.post(
         LISTINGS, {"asking_price": "400000", "properties": [{"address": "1 A St"}]}, format="json"
+    ).data["id"]  # active → visible to the other user, but never editable
+    assert other_client.patch(f"{LISTINGS}{lid}/", {"title": "hijack"}, format="json").status_code == 404
+    assert other_client.put(f"{LISTINGS}{lid}/", {"title": "hijack"}, format="json").status_code == 404
+    assert other_client.get(f"{LISTINGS}{lid}/mandate/").status_code == 404
+    assert (
+        other_client.put(f"{LISTINGS}{lid}/mandate/", {"floor_price": "1"}, format="json").status_code
+        == 404
     )
-    lid = created.data["id"]
-    # The other user cannot see it.
-    assert other_client.get(f"{LISTINGS}{lid}/").status_code == 404
-    assert other_client.get(LISTINGS).data == []
+    assert other_client.get(f"{LISTINGS}{lid}/valuation/").status_code == 404
+    assert other_client.get(f"{LISTINGS}{lid}/comps/").status_code == 404

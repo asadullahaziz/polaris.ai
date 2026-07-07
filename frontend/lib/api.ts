@@ -196,6 +196,8 @@ export const searchProperties = (q: string, limit = 8) =>
     `/api/properties/search?q=${encodeURIComponent(q)}&limit=${limit}`,
   ).then((r) => json<{ results: PropertySearchResult[] }>(r));
 
+export type ListingSeller = { id: number; name: string };
+
 export type ListingSummary = {
   id: number;
   title: string;
@@ -205,6 +207,7 @@ export type ListingSummary = {
   created_at: string;
   primary_property: Property | null;
   cover_url: string | null;
+  seller: ListingSeller;
 };
 
 export type MandateShape =
@@ -233,7 +236,9 @@ export type ListingDetail = {
     sort_order: number;
   }[];
   media: { id: number; kind: string; url: string; sort_order: number }[];
-  mandate: MandateShape;
+  // Seller-private: null on other sellers' listings.
+  mandate: MandateShape | null;
+  seller: ListingSeller;
 };
 
 export type PropertyItemInput = {

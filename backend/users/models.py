@@ -104,7 +104,7 @@ class UserProfile(models.Model):
     #                          as the default `n` in `reply_cap_reached` (P4).
     auto_reply_when_away = models.BooleanField(default=True)
     agent_autonomy = models.CharField(
-        max_length=32, default="draft_for_approval", choices=AUTONOMY_CHOICES
+        max_length=32, default="auto_send", choices=AUTONOMY_CHOICES
     )
     agent_instructions = models.TextField(blank=True, default="")
     agent_reply_cap = models.PositiveSmallIntegerField(default=3)

@@ -38,6 +38,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import Point
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from catalog.models import (
@@ -542,7 +543,19 @@ class Command(BaseCommand):
         User = get_user_model()
         # Order matters: clear PROTECT references before their targets.
         Sale.objects.filter(source=SEED_SOURCE).delete()
-        Listing.objects.filter(seller__email__startswith="kc_seller_").delete()
+        # Any listing that attaches a seed (county) property must be deleted before the
+        # properties themselves — ListingProperty.property is PROTECT. This includes
+        # listings created during a demo session under a non-seed seller (e.g. `demo`);
+        # filtering by seller email alone leaves those rows PROTECTing the properties.
+        # values_list over the OR-join can repeat listing ids, so materialize to a set
+        # (a distinct() queryset can't be .delete()'d).
+        seed_listing_ids = set(
+            Listing.objects.filter(
+                Q(seller__email__startswith="kc_seller_")
+                | Q(listingproperty__property__county_fips=COUNTY_FIPS)
+            ).values_list("id", flat=True)
+        )
+        Listing.objects.filter(id__in=seed_listing_ids).delete()
         BuyBox.objects.filter(buyer__email__startswith="kc_buyer_").delete()
         User.objects.filter(email__startswith="kc_").delete()
         deleted, _ = Property.objects.filter(county_fips=COUNTY_FIPS).delete()

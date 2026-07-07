@@ -28,7 +28,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description List / retrieve (with transcript) / delete the user's copilot sessions. */
+        /**
+         * @description Rehydrate one session. Lazily expire a parked confirm nobody answered first, so a
+         *     reopened chat shows a greyed 'expired' card (not a live one) and its composer isn't
+         *     gated forever — no background job needed.
+         */
         get: operations["ai_chats_retrieve"];
         put?: never;
         post?: never;
@@ -671,6 +675,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/properties/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description GET /api/properties/search?q=…&limit=… — closed-world address autocomplete
+         *     (typeahead) over the known Property universe. Same service seam as the copilot's
+         *     `search_properties` tool (agent == API).
+         */
+        get: operations["properties_search_retrieve"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -699,6 +724,13 @@ export interface components {
             /** Format: date-time */
             readonly updated_at: string;
             readonly messages: components["schemas"]["AiMessage"][];
+            /**
+             * @description The parked write-confirm (`{kind, action, summary, proposal}`) so a reopened
+             *     session rebuilds an actionable card; NULL when nothing is awaiting approval.
+             */
+            readonly pending_confirm: {
+                [key: string]: unknown;
+            } | null;
         };
         AiChatSummary: {
             readonly id: number;
@@ -713,6 +745,7 @@ export interface components {
             readonly id: number;
             role: components["schemas"]["RoleEnum"];
             content?: string;
+            tool_calls?: unknown;
             /** Format: date-time */
             readonly created_at: string;
         };
@@ -750,7 +783,11 @@ export interface components {
             media?: components["schemas"]["MediaItem"][];
             mandate?: components["schemas"]["Mandate"];
         };
-        /** @description The `/listings/[id]` detail: every property + media + the deal mandate. */
+        /**
+         * @description The `/listings/[id]` detail: every property + media + the deal mandate.
+         *     Cross-user visible for active listings — the mandate (floor/ceiling/instructions)
+         *     is seller-PRIVATE and only serialized for the owner; everyone else gets null.
+         */
         ListingDetail: {
             readonly id: number;
             readonly title: string;
@@ -766,6 +803,7 @@ export interface components {
             readonly properties: string;
             readonly media: components["schemas"]["ListingMedia"][];
             readonly mandate: string;
+            readonly seller: string;
         };
         ListingMedia: {
             readonly id: number;
@@ -773,7 +811,11 @@ export interface components {
             readonly url: string;
             readonly sort_order: number;
         };
-        /** @description The `/listings` card view: headline fields + primary property + cover photo. */
+        /**
+         * @description The `/listings` card view: headline fields + primary property + cover photo.
+         *     Cross-user visible (marketplace), so it carries the seller's public identity and
+         *     nothing seller-private.
+         */
         ListingSummary: {
             readonly id: number;
             readonly title: string;
@@ -785,6 +827,7 @@ export interface components {
             readonly created_at: string;
             readonly primary_property: string;
             readonly cover_url: string;
+            readonly seller: string;
         };
         ListingUpdate: {
             title?: string;
@@ -828,8 +871,11 @@ export interface components {
         };
         OutreachCampaign: {
             readonly id: number;
-            readonly listing: number;
+            readonly listing: number | null;
+            /** @description The single-listing display address; NULL for a multi-listing campaign. */
             readonly listing_address: string | null;
+            /** @description Distinct addresses across the campaign's recipient rows (multi-listing). */
+            readonly listing_addresses: string[];
             readonly copilot_ai_chat: number | null;
             readonly status: components["schemas"]["OutreachCampaignStatusEnum"];
             /** Format: date-time */
@@ -848,10 +894,13 @@ export interface components {
             readonly id: number;
             readonly recipient_user: number;
             readonly name: string;
+            readonly listing: number;
+            readonly listing_address: string | null;
             /** Format: decimal */
             readonly rank_score: string | null;
             readonly rank_reason: string | null;
             readonly draft_body: string | null;
+            /** @default pending */
             readonly status: components["schemas"]["OutreachRecipientStatusEnum"];
             readonly chat_id: number;
         };
@@ -2035,6 +2084,24 @@ export interface operations {
         };
     };
     properties_lookup_retrieve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No response body */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    properties_search_retrieve: {
         parameters: {
             query?: never;
             header?: never;
