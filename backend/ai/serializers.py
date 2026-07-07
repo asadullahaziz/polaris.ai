@@ -51,9 +51,22 @@ class AgentMemorySerializer(serializers.ModelSerializer):
 
 
 # ---- outreach (P5) — the shortlist the FE renders for approval ------------------
+def _listing_address(listing_id) -> str | None:
+    from catalog.models import ListingProperty
+
+    lp = (
+        ListingProperty.objects.filter(listing_id=listing_id)
+        .select_related("property")
+        .order_by("sort_order")
+        .first()
+    )
+    return lp.property.address_raw if lp and lp.property else None
+
+
 class OutreachRecipientSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     chat_id = serializers.IntegerField(read_only=True)
+    listing_address = serializers.SerializerMethodField()
 
     class Meta:
         model = OutreachRecipient
@@ -61,6 +74,8 @@ class OutreachRecipientSerializer(serializers.ModelSerializer):
             "id",
             "recipient_user",
             "name",
+            "listing",
+            "listing_address",
             "rank_score",
             "rank_reason",
             "draft_body",
@@ -73,10 +88,14 @@ class OutreachRecipientSerializer(serializers.ModelSerializer):
         u = obj.recipient_user
         return u.display_name if u else f"Buyer {obj.recipient_user_id}"
 
+    def get_listing_address(self, obj) -> str | None:
+        return _listing_address(obj.listing_id)
+
 
 class OutreachCampaignSerializer(serializers.ModelSerializer):
     recipients = OutreachRecipientSerializer(many=True, read_only=True)
     listing_address = serializers.SerializerMethodField()
+    listing_addresses = serializers.SerializerMethodField()
 
     class Meta:
         model = OutreachCampaign
@@ -84,6 +103,7 @@ class OutreachCampaignSerializer(serializers.ModelSerializer):
             "id",
             "listing",
             "listing_address",
+            "listing_addresses",
             "copilot_ai_chat",
             "status",
             "created_at",
@@ -92,5 +112,12 @@ class OutreachCampaignSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_listing_address(self, obj) -> str | None:
-        lp = obj.listing.listingproperty_set.first() if obj.listing_id else None
-        return lp.property.address_raw if lp and lp.property else None
+        """The single-listing display address; NULL for a multi-listing campaign."""
+        return _listing_address(obj.listing_id) if obj.listing_id else None
+
+    def get_listing_addresses(self, obj) -> list[str]:
+        """Distinct addresses across the campaign's recipient rows (multi-listing)."""
+        seen: dict[int, None] = {}
+        for r in obj.recipients.all():
+            seen.setdefault(r.listing_id)
+        return [a for a in (_listing_address(lid) for lid in seen) if a]

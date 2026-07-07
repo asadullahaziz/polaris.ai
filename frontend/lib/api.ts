@@ -511,6 +511,8 @@ export type OutreachRecipient = {
   id: number;
   recipient_user: number;
   name: string;
+  listing: number;
+  listing_address: string | null;
   rank_score: string | null;
   rank_reason: string;
   draft_body: string;
@@ -520,8 +522,9 @@ export type OutreachRecipient = {
 
 export type OutreachCampaign = {
   id: number;
-  listing: number;
+  listing: number | null; // set for single-listing campaigns; null = multi-listing
   listing_address: string | null;
+  listing_addresses: string[];
   copilot_ai_chat: number | null;
   status: "awaiting_approval" | "sending" | "done" | "cancelled";
   created_at: string;

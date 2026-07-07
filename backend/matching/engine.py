@@ -352,6 +352,35 @@ def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> 
     return result
 
 
+def rank_buyers_multi(
+    listing_ids: list[int], *, limit_per_listing: int = 10, radius_mi: float = 5.0
+) -> dict:
+    """Rank buyers for SEVERAL listings and merge per buyer — the deterministic 'who
+    matches what' matrix for multi-listing outreach. A buyer 'matches' a listing by
+    appearing in that listing's own top-`limit_per_listing` ranking; each match keeps its
+    per-listing score + reason, so the caller can send each buyer only the listings they
+    actually rank for. No LLM."""
+    merged: dict[int, dict] = {}
+    per_listing: dict[int, dict] = {}
+    for lid in listing_ids:
+        res = rank_buyers(lid, limit=limit_per_listing, radius_mi=radius_mi)
+        per_listing[lid] = {k: v for k, v in res.items() if k != "ranked"}
+        for row in res.get("ranked", []):
+            buyer = merged.setdefault(
+                row["user_id"],
+                {"user_id": row["user_id"], "name": row["name"], "matches": []},
+            )
+            buyer["matches"].append(
+                {"listing_id": lid, "score": row["score"], "reason": row["reason"]}
+            )
+    buyers = list(merged.values())
+    for b in buyers:
+        b["matches"].sort(key=lambda m: (-m["score"], m["listing_id"]))
+        b["best_score"] = b["matches"][0]["score"]
+    buyers.sort(key=lambda b: (-b["best_score"], b["name"], b["user_id"]))
+    return {"buyers": buyers, "per_listing": per_listing}
+
+
 def rank_buyers_for_attrs(
     *,
     geom,

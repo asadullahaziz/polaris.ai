@@ -553,12 +553,120 @@ def _assess_deal_for_listing(listing_id: int, seller_id: int, strategy: str | No
     return assess_deal(listing_id, strategy=strategy)
 
 
-def _launch_outreach(seller_id: int, listing_id: int, ai_chat_id=None, limit: int = 10) -> dict:
-    """Rank + draft + persist an `awaiting_approval` campaign (the pure ledger core). The
-    caller approves + emits `outreach/approved` separately (Inngest stays out of dal)."""
+def _rank_buyers_for_listings(seller_id: int, listing_ids: list[int], limit_per_listing: int = 10) -> dict:
+    """The multi-listing 'who matches what' read: per-buyer merged rankings over the
+    seller's listings (each match keeps its per-listing score + reason), plus listing
+    meta so the caller can narrate addresses. Ownership-checked per listing."""
+    from catalog.models import Listing, ListingProperty
+    from matching.engine import rank_buyers_multi
+
+    ids = list(dict.fromkeys(int(x) for x in (listing_ids or [])))
+    if not ids:
+        return {"error": "no listing_ids given"}
+    owned = set(Listing.objects.filter(id__in=ids, seller_id=seller_id).values_list("id", flat=True))
+    errors = [
+        {"listing_id": lid, "error": "not found or not yours"} for lid in ids if lid not in owned
+    ]
+    ok_ids = [lid for lid in ids if lid in owned]
+    if not ok_ids:
+        return {"buyers": [], "listings": [], "errors": errors}
+
+    res = rank_buyers_multi(ok_ids, limit_per_listing=limit_per_listing)
+    meta: dict[int, dict] = {}
+    for lp in (
+        ListingProperty.objects.filter(listing_id__in=ok_ids)
+        .select_related("property", "listing")
+        .order_by("listing_id", "sort_order")
+    ):
+        meta.setdefault(
+            lp.listing_id,
+            {
+                "listing_id": lp.listing_id,
+                "address": lp.property.address_raw,
+                "asking_price": float(lp.listing.asking_price)
+                if lp.listing.asking_price is not None
+                else None,
+            },
+        )
+    out = {
+        "listings": [meta.get(lid, {"listing_id": lid, "address": None}) for lid in ok_ids],
+        "buyers": res["buyers"],
+    }
+    if errors:
+        out["errors"] = errors
+    return out
+
+
+def _preview_outreach(seller_id: int, recipients: list[dict]) -> dict:
+    """Validate an outreach selection + resolve names/addresses/ledger flags for the
+    confirm card. Read-only (safe to re-run on an interrupt resume). Builds the SAME
+    templated fallback body the commit would use, so the card never lies."""
+    from django.contrib.auth import get_user_model
+
+    from ai.outreach_service import _ledger_already_sent, build_opener
+    from catalog.models import Listing, ListingProperty
+
+    recipients = [r for r in (recipients or []) if r.get("listing_ids")]
+    if not recipients:
+        return {"error": "no recipients (each needs a user_id and at least one listing_id)"}
+
+    all_lids = sorted({int(lid) for r in recipients for lid in r["listing_ids"]})
+    owned = {lst.id: lst for lst in Listing.objects.filter(id__in=all_lids, seller_id=seller_id)}
+    missing = [lid for lid in all_lids if lid not in owned]
+    if missing:
+        return {"error": f"listing(s) {missing} not found or not yours — check list_my_listings"}
+
+    props: dict[int, object] = {}
+    for lp in (
+        ListingProperty.objects.filter(listing_id__in=all_lids)
+        .select_related("property")
+        .order_by("listing_id", "sort_order")
+    ):
+        props.setdefault(lp.listing_id, lp.property)
+
+    User = get_user_model()
+    uids = [int(r["user_id"]) for r in recipients]
+    users = {u.id: u for u in User.objects.filter(id__in=uids)}
+    bad = sorted({uid for uid in uids if uid not in users or uid == seller_id})
+    if bad:
+        return {
+            "error": f"recipient user(s) {bad} not found (or the seller themself) — "
+            "resolve buyers with rank_buyers_for_listings or find_buyers"
+        }
+
+    out = []
+    for r in recipients:
+        uid = int(r["user_id"])
+        name = users[uid].display_name
+        lids = list(dict.fromkeys(int(x) for x in r["listing_ids"]))
+        listings = []
+        fresh = []
+        for lid in lids:
+            already = _ledger_already_sent(lid, uid)
+            prop = props.get(lid)
+            listings.append(
+                {
+                    "listing_id": lid,
+                    "address": prop.address_raw if prop else None,
+                    "already_contacted": already,
+                }
+            )
+            if not already:
+                fresh.append(lid)
+        body = (r.get("body") or "").strip() or build_opener(
+            [(props.get(lid), owned[lid].asking_price) for lid in (fresh or lids)], name
+        )
+        out.append({"user_id": uid, "name": name, "listings": listings, "body": body})
+    return {"recipients": out}
+
+
+def _launch_outreach(seller_id: int, recipients: list[dict], ai_chat_id=None) -> dict:
+    """Persist an `awaiting_approval` campaign from explicit selections (the pure ledger
+    core). The caller approves + emits `outreach/approved` separately (Inngest stays out
+    of dal)."""
     from ai.outreach_service import launch_outreach
 
-    return launch_outreach(seller_id, listing_id, copilot_ai_chat_id=ai_chat_id, limit=limit)
+    return launch_outreach(seller_id, recipients, copilot_ai_chat_id=ai_chat_id)
 
 
 def _approve_campaign(seller_id: int, campaign_id: int) -> dict:
@@ -569,10 +677,136 @@ def _approve_campaign(seller_id: int, campaign_id: int) -> dict:
 
 
 rank_buyers = sync_to_async(_rank_buyers)
+rank_buyers_for_listings = sync_to_async(_rank_buyers_for_listings)
 find_buyers = sync_to_async(_find_buyers)
 assess_deal_for_listing = sync_to_async(_assess_deal_for_listing)
+preview_outreach = sync_to_async(_preview_outreach)
 launch_outreach = sync_to_async(_launch_outreach)
 approve_campaign = sync_to_async(_approve_campaign)
+
+
+# ---- Human 1:1 chats (copilot resolver + confirm-gated follow-ups) ---------------
+def _list_chats(
+    principal_id: int,
+    *,
+    counterparty: str | None = None,
+    involves_listing_id: int | None = None,
+    awaiting_reply_only: bool = False,
+    limit: int = 20,
+) -> list[dict]:
+    """The principal's 1:1 chats, filterable — the copilot's people→chat_id resolver.
+    `awaiting_reply` = the last sent message came from OUR side (human or agent), i.e.
+    the counterparty hasn't answered yet."""
+    from chat.services import list_inbox
+
+    rows = list_inbox(principal_id)
+    out: list[dict] = []
+    for r in rows:
+        last = r.get("last_message")
+        awaiting = bool(last and last.get("sender") == principal_id)
+        if awaiting_reply_only and not awaiting:
+            continue
+        cp = r.get("counterparty") or {}
+        if counterparty and counterparty.lower() not in (cp.get("name") or "").lower():
+            continue
+        out.append(
+            {
+                "chat_id": r["id"],
+                "counterparty": {"user_id": cp.get("id"), "name": cp.get("name")},
+                "unread": r["unread"],
+                "awaiting_reply": awaiting,
+                "updated_at": r["updated_at"],
+                "last_message": (
+                    None
+                    if not last
+                    else {
+                        "body": (last.get("body") or "")[:200],
+                        "kind": last.get("kind"),
+                        "from_me": last.get("sender") == principal_id,
+                        "created_at": last.get("created_at"),
+                    }
+                ),
+            }
+        )
+    if involves_listing_id is not None:
+        from chat.models import MessageAttachment
+
+        with_listing = set(
+            MessageAttachment.objects.filter(
+                listing_id=involves_listing_id,
+                message__chat_id__in=[o["chat_id"] for o in out],
+            ).values_list("message__chat_id", flat=True)
+        )
+        out = [o for o in out if o["chat_id"] in with_listing]
+    return out[:limit]
+
+
+def _preview_chat_sends(principal_id: int, chat_ids: list[int]) -> dict[int, str]:
+    """Membership check + counterparty names for the confirm card. Read-only (safe to
+    re-run on an interrupt resume). A chat_id missing from the result is invalid — the
+    principal isn't a member (or it doesn't exist)."""
+    from chat.models import ChatMember
+
+    mine = set(
+        ChatMember.objects.filter(chat_id__in=chat_ids, user_id=principal_id).values_list(
+            "chat_id", flat=True
+        )
+    )
+    others = ChatMember.objects.filter(chat_id__in=mine).exclude(
+        user_id=principal_id
+    ).select_related("user")
+    return {m.chat_id: m.user.display_name for m in others}
+
+
+def _send_chat_messages(principal_id: int, sends: list[dict], dedup_prefix: str) -> dict:
+    """Commit a confirmed batch of follow-ups: one kind='agent' message per chat, sent as
+    Polaris for the principal. Membership is re-checked per chat; each insert is
+    idempotent under `{dedup_prefix}:{chat_id}:{body-hash}` so a resume replay can't
+    double-send (follow-ups stay repeatable across turns — unlike the outreach ledger,
+    there is deliberately no once-ever rule here)."""
+    import hashlib
+
+    from chat.services import chat_membership, post_agent_message
+
+    results: list[dict] = []
+    for s in sends:
+        chat_id = int(s["chat_id"])
+        body = (s.get("body") or "").strip()
+        if chat_membership(chat_id, principal_id) is None:
+            results.append(
+                {"chat_id": chat_id, "status": "error", "error": "not a member of this chat"}
+            )
+            continue
+        if not body:
+            results.append({"chat_id": chat_id, "status": "error", "error": "empty body"})
+            continue
+        digest = hashlib.sha1(body.encode()).hexdigest()[:8]
+        saved = post_agent_message(
+            chat_id,
+            principal_id,
+            body,
+            attachment_listing_ids=s.get("listing_ids") or None,
+            dedup_key=f"{dedup_prefix}:{chat_id}:{digest}",
+        )
+        if saved.get("duplicate"):
+            results.append({"chat_id": chat_id, "status": "duplicate"})
+            continue
+        results.append(
+            {
+                "chat_id": chat_id,
+                "status": "sent",
+                "message_id": saved["id"],
+                # The full wire-shape message, for the caller's live WS broadcast only —
+                # popped before the result is narrated back to the model.
+                "message": {k: v for k, v in saved.items() if k != "duplicate"},
+            }
+        )
+    return {"sent": sum(1 for r in results if r["status"] == "sent"), "results": results}
+
+
+list_chats = sync_to_async(_list_chats)
+preview_chat_sends = sync_to_async(_preview_chat_sends)
+send_chat_messages = sync_to_async(_send_chat_messages)
 
 
 # ---- Away-responder (Graph 2) — principal-centric plan + deal math (P4) ----------

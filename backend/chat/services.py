@@ -143,6 +143,40 @@ def post_human_message(
     return {**serialize_message(msg), "duplicate": False}
 
 
+def post_agent_message(
+    chat_id: int,
+    sender_id: int,
+    body: str,
+    *,
+    attachment_listing_ids=None,
+    dedup_key: str | None = None,
+    action: str = "inform",
+) -> dict:
+    """Persist an agent message — Polaris speaking FOR `sender_id` (kind='agent',
+    sender=the principal), e.g. a copilot follow-up or an outreach opener. The caller
+    supplies a namespaced `dedup_key` (`copilot:…` / `outreach:…`) so a replayed commit
+    is a silent no-op → {duplicate}. Returns the serialized message dict."""
+    body = (body or "").strip()
+    try:
+        with transaction.atomic():
+            msg = Message.objects.create(
+                chat_id=chat_id,
+                kind="agent",
+                sender_id=sender_id,
+                action=action,
+                body=body,
+                status="sent",
+                sent_at=timezone.now(),
+                dedup_key=dedup_key,
+            )
+            if attachment_listing_ids:
+                _attach_listings(msg, attachment_listing_ids)
+    except IntegrityError:
+        return {"duplicate": True}
+    Chat.objects.filter(id=chat_id).update(updated_at=timezone.now())
+    return {**serialize_message(msg), "duplicate": False}
+
+
 # ---- inbox + transcript + read state -------------------------------------------
 def _counterparty(chat: Chat, user_id: int):
     for member in chat.members.all():

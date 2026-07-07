@@ -2,14 +2,15 @@
 Outreach fan-out Inngest function (Graph 3 · P5; architecture §6/§9).
 
 Triggered by `outreach/approved` (emitted by the approve REST action + the copilot
-`launch_outreach` tool). This is the durable post-approval half of Graph 3 — the seller
+`send_outreach` tool). This is the durable post-approval half of Graph 3 — the seller
 may close the tab; it outlives the copilot turn. It is deliberately **thin glue**: every
-guarantee (ledger, opener idempotency, one-chat-per-pair) lives in
-`ai.outreach_service.send_recipient`, which is pure/sync and unit-tested without this
-dev server.
+guarantee (per-pair ledger, opener idempotency, one-chat-per-pair, one message per
+buyer) lives in `ai.outreach_service.send_to_buyer`, which is pure/sync and unit-tested
+without this dev server.
 
 Three jobs, split along the §9 boundary:
-  1. one durable step per recipient → `send_recipient` (retries, concurrency);
+  1. one durable step per BUYER → `send_to_buyer` (retries, concurrency) — one opener
+     message per buyer covering every listing that buyer matched and the ledger allows;
   2. **templated** progress ticks pushed to the seller's copilot chat over the WS channel
      layer (`copilot_{seller}` group) — NO model call per tick;
   3. exactly one final NL summary — one model narration (templated fallback), persisted as
@@ -62,15 +63,17 @@ async def outreach_fanout(ctx: inngest.Context) -> dict:
 
     seller_id = info["seller_id"]
     ai_chat_id = info["copilot_ai_chat_id"]
-    recipient_ids = info["recipient_ids"]
-    total = len(recipient_ids)
+    buyer_ids = info["buyer_ids"]
+    total = len(buyer_ids)
     sent = skipped = 0
 
-    for i, rid in enumerate(recipient_ids, start=1):
+    for i, uid in enumerate(buyer_ids, start=1):
         try:
-            res = await ctx.step.run(f"send-{rid}", sync_to_async(service.send_recipient), rid)
+            res = await ctx.step.run(
+                f"send-u{uid}", sync_to_async(service.send_to_buyer), campaign_id, uid
+            )
         except Exception as exc:  # ensure the summary always runs (demo safety)
-            log.exception("send_recipient %s failed: %s", rid, exc)
+            log.exception("send_to_buyer %s failed: %s", uid, exc)
             res = {"status": "error"}
         if res.get("status") == "sent":
             sent += 1
@@ -89,7 +92,7 @@ async def outreach_fanout(ctx: inngest.Context) -> dict:
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 - never break the fan-out on this
-                    log.warning("chat/inbound emit failed for recipient %s: %s", rid, exc)
+                    log.warning("chat/inbound emit failed for buyer %s: %s", uid, exc)
         elif res.get("status") in ("skipped", "already_sent"):
             skipped += 1
 
@@ -134,8 +137,14 @@ async def outreach_fanout(ctx: inngest.Context) -> dict:
 
 
 async def _summary_text(info: dict, outcome: dict) -> str:
+    addresses = info.get("listing_addresses") or []
+    if len(addresses) == 1:
+        label = addresses[0]
+    else:
+        shown = ", ".join(addresses[:3]) + ("…" if len(addresses) > 3 else "")
+        label = f"{len(addresses)} listings ({shown})"
     templated = (
-        f"Outreach on {info['listing_address']}: opened {outcome['sent']} chat(s)"
+        f"Outreach on {label}: opened {outcome['sent']} chat(s)"
         + (f", {outcome['skipped']} already in contact" if outcome["skipped"] else "")
         + (f", {outcome['failed']} failed" if outcome["failed"] else "")
         + "."
@@ -147,8 +156,8 @@ async def _summary_text(info: dict, outcome: dict) -> str:
             "You are Polaris, a real-estate copilot. In 1-2 warm, concrete sentences, "
             "summarize this outreach result for the seller. Use the exact numbers; invent "
             "nothing.\n\n"
-            f"Listing: {info['listing_address']}\n"
-            f"Chats opened (reached): {outcome['sent']}\n"
+            f"Listing(s): {label}\n"
+            f"Buyers reached (chats opened): {outcome['sent']}\n"
             f"Skipped (already in contact): {outcome['skipped']}\n"
             f"Failed: {outcome['failed']}\n"
         )

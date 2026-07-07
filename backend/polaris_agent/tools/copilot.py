@@ -40,7 +40,8 @@ WRITE_TOOL_NAMES = {
     "create_buy_box",
     "update_buy_box",
     "delete_buy_box",
-    "launch_outreach",
+    "send_outreach",
+    "send_chat_messages",
 }
 
 
@@ -58,6 +59,32 @@ def _confirm(action: str, summary: str, proposal: dict) -> bool:
     if isinstance(decision, dict):
         return bool(decision.get("approved"))
     return bool(decision)
+
+
+class OutreachTarget(BaseModel):
+    """One buyer in a `send_outreach` batch, with the listing(s) THEY matched."""
+
+    user_id: int = Field(
+        description="the buyer's user_id (from rank_buyers_for_listings / find_buyers)"
+    )
+    listing_ids: list[int] = Field(
+        description="ONLY the listing(s) this buyer ranked for / should receive"
+    )
+    body: str | None = Field(
+        None,
+        description="personalized opener covering exactly those listings; "
+        "omit for a plain default template",
+    )
+
+
+class OutgoingChatMessage(BaseModel):
+    """One message in a `send_chat_messages` batch."""
+
+    chat_id: int = Field(description="target chat id (resolve with list_chats first)")
+    body: str = Field(description="the message text, written personally for this recipient")
+    listing_ids: list[int] = Field(
+        default_factory=list, description="the user's listing ids to attach (optional)"
+    )
 
 
 class ExtractedListing(BaseModel):
@@ -154,11 +181,16 @@ def copilot_tools(principal_id: int) -> list:
         return await dal.get_buy_box(principal_id, buy_box_id)
 
     @tool
-    async def rank_buyers_for_listing(listing_id: int, limit: int = 10) -> dict:
-        """Rank the buyers most likely to close on one of the user's listings, each with a
-        plain-language 'why this buyer' reason. Deterministic — narrate the reason, never
-        the raw score. (This ranks + explains; sending outreach is a separate step.)"""
-        return await dal.rank_buyers(listing_id, principal_id, limit=limit)
+    async def rank_buyers_for_listings(listing_ids: list[int], limit_per_listing: int = 10) -> dict:
+        """Rank the buyers most likely to close on one or SEVERAL of the user's listings
+        at once. Each buyer comes back with user_id, the listing(s) THEY matched, and a
+        per-listing 'why this buyer' reason — exactly the shape send_outreach needs, so a
+        buyer matching two listings can get one opener covering both. Deterministic —
+        narrate the reason, never the raw score. (This ranks + explains; sending outreach
+        is a separate step.)"""
+        return await dal.rank_buyers_for_listings(
+            principal_id, listing_ids, limit_per_listing=limit_per_listing
+        )
 
     @tool
     async def find_buyers(
@@ -195,6 +227,27 @@ def copilot_tools(principal_id: int) -> list:
     async def read_memory(namespace: str = "general") -> list:
         """Recall durable facts remembered about this user (namespace-scoped)."""
         return await dal.read_memory(principal_id, namespace)
+
+    @tool
+    async def list_chats(
+        counterparty: str | None = None,
+        involves_listing_id: int | None = None,
+        awaiting_reply_only: bool = False,
+        limit: int = 20,
+    ) -> list:
+        """List the user's 1:1 chats (most recent first) — use this to resolve people to
+        chat_ids, e.g. before sending follow-ups. Filters (all optional, combinable):
+        `counterparty` = name fragment; `involves_listing_id` = chats where that listing
+        was shared (e.g. everyone contacted about it); `awaiting_reply_only` = the last
+        message is ours and the other person hasn't answered yet. Each row has the
+        counterparty, the last message, and whether we're awaiting their reply."""
+        return await dal.list_chats(
+            principal_id,
+            counterparty=counterparty,
+            involves_listing_id=involves_listing_id,
+            awaiting_reply_only=awaiting_reply_only,
+            limit=limit,
+        )
 
     # =================== WRITES (propose → confirm → commit) ====================
     @tool
@@ -387,43 +440,47 @@ def copilot_tools(principal_id: int) -> list:
         return await dal.delete_buy_box(principal_id, buy_box_id)
 
     @tool
-    async def launch_outreach(
-        listing_id: int, limit: int = 10, config: RunnableConfig | None = None
+    async def send_outreach(
+        recipients: list[OutreachTarget], config: RunnableConfig | None = None
     ) -> dict:
-        """Rank the buyers most likely to close on one of the user's listings, draft a
-        personalized opener for each, and — on the user's confirmation — open the pair chat
-        with each buyer and send it (the listing is attached). Deterministic ranking;
-        templated openers. Requires confirmation before any message is sent."""
-        # Propose: rank first so the confirm card shows the actual shortlist. Read-only, so
-        # it re-runs harmlessly when the graph resumes after the interrupt.
-        ranked = await dal.rank_buyers(listing_id, principal_id, limit=limit)
-        if ranked.get("error"):
-            return ranked
-        rows = ranked.get("ranked", [])
-        if not rows:
-            return {"status": "no_buyers", "note": "No matching buyers found near this listing."}
-        proposal = {
-            "listing_id": listing_id,
-            "buyers": [
-                {"name": r["name"], "score": r["score"], "reason": r["reason"]} for r in rows
-            ],
-        }
+        """FIRST-CONTACT outreach: send each selected buyer ONE opener message that opens
+        the 1:1 chat, attaching exactly the listing(s) THAT buyer matched — a buyer who
+        matches two listings gets one message covering both; a buyer who matches only one
+        gets only that one. Pick buyers + their listing_ids from rank_buyers_for_listings
+        (or find_buyers) first, and draft a personal body per buyer. Already-contacted
+        (buyer, listing) pairs are skipped automatically (the delivery ledger). Requires
+        the user's confirmation; the sends then run durably in the background with live
+        progress. For buyers you've ALREADY contacted, use send_chat_messages instead."""
+        recipients = [
+            OutreachTarget.model_validate(r) if not isinstance(r, OutreachTarget) else r
+            for r in (recipients or [])
+        ]
+        if not recipients:
+            return {"status": "empty", "note": "no recipients to contact"}
+        # Propose: validate + resolve names/addresses/ledger flags so the confirm card
+        # shows real people, real listings, and the exact opener text. Read-only, so it
+        # re-runs harmlessly when the graph resumes after the interrupt.
+        specs = [r.model_dump() for r in recipients]
+        preview = await dal.preview_outreach(principal_id, specs)
+        if preview.get("error"):
+            return preview
+        n_listings = len({lid for r in recipients for lid in r.listing_ids})
         if not _confirm(
-            "launch_outreach",
-            f"Send personalized outreach to {len(rows)} buyer(s) for listing #{listing_id}?",
-            proposal,
+            "send_outreach",
+            f"Send outreach to {len(recipients)} buyer(s) across {n_listings} listing(s)?",
+            {"recipients": preview["recipients"]},
         ):
-            return {"status": "cancelled", "action": "launch_outreach"}
+            return {"status": "cancelled", "action": "send_outreach"}
 
         # Commit: persist the campaign (via the pure ledger core), flip it to sending, and
         # fire the durable fan-out event. The Inngest emit lives HERE (not in dal), and is
         # best-effort — the campaign is already staged, so a dev-server hiccup only means
         # the fan-out is retried, never a lost campaign.
         ai_chat_id = (config or {}).get("configurable", {}).get("ai_chat_id")
-        res = await dal.launch_outreach(principal_id, listing_id, ai_chat_id=ai_chat_id, limit=limit)
+        res = await dal.launch_outreach(principal_id, specs, ai_chat_id=ai_chat_id)
         campaign_id = res.get("campaign_id")
         if not campaign_id:
-            return res  # e.g. no buyers / listing error — nothing to dispatch
+            return res  # validation error — nothing to dispatch
         approved = await dal.approve_campaign(principal_id, campaign_id)
         res["dispatched"] = False
         if approved.get("status") == "sending":
@@ -440,6 +497,92 @@ def copilot_tools(principal_id: int) -> list:
                 log.warning("failed to emit outreach/approved: %s", exc)
                 res["warning"] = "queued locally; fan-out event not delivered to Inngest"
         return res
+
+    @tool
+    async def send_chat_messages(
+        messages: list[OutgoingChatMessage], config: RunnableConfig | None = None
+    ) -> dict:
+        """Send message(s) into the user's EXISTING chats — e.g. follow-ups to buyers
+        already contacted about a listing. Draft each body personally for its recipient
+        (reference the deal and any prior exchange); optionally attach listings. One
+        confirmation card covers the whole batch; messages send as Polaris on the user's
+        behalf. This cannot open a new chat — first contact goes through send_outreach.
+        Resolve targets with list_chats first."""
+        messages = [
+            OutgoingChatMessage.model_validate(m) if not isinstance(m, OutgoingChatMessage) else m
+            for m in (messages or [])
+        ]
+        if not messages:
+            return {"status": "empty", "note": "no messages to send"}
+        # Propose: validate targets + resolve names so the confirm card shows real people.
+        # Read-only, so it re-runs harmlessly when the graph resumes after the interrupt.
+        names = await dal.preview_chat_sends(principal_id, [m.chat_id for m in messages])
+        invalid = [m.chat_id for m in messages if m.chat_id not in names]
+        if invalid:
+            return {
+                "status": "invalid_chats",
+                "invalid_chat_ids": invalid,
+                "note": "these chats don't exist or aren't the user's — resolve targets "
+                "with list_chats and retry",
+            }
+        if any(not m.body.strip() for m in messages):
+            return {"status": "error", "note": "every message needs a non-empty body"}
+        recipients = [names[m.chat_id] for m in messages]
+        shown = ", ".join(recipients[:3]) + (
+            f" +{len(recipients) - 3} more" if len(recipients) > 3 else ""
+        )
+        proposal = {
+            "messages": [
+                {
+                    "chat_id": m.chat_id,
+                    "to": names[m.chat_id],
+                    "body": m.body,
+                    "listing_ids": m.listing_ids,
+                }
+                for m in messages
+            ]
+        }
+        if not _confirm(
+            "send_chat_messages",
+            f"Send {len(messages)} message(s) to {shown}?",
+            proposal,
+        ):
+            return {"status": "cancelled", "action": "send_chat_messages"}
+
+        # Commit: idempotent under this turn's thread_id (a resume replay can't double-send).
+        thread_id = (config or {}).get("configurable", {}).get("thread_id") or "turn"
+        res = await dal.send_chat_messages(
+            principal_id, [m.model_dump() for m in messages], f"copilot:{thread_id}"
+        )
+        # Live-deliver to any open chat window + arm each counterparty's away-responder
+        # (the follow-up is an inbound to their side) — both best-effort, like outreach.
+        for r in res.get("results", []):
+            payload = r.pop("message", None)
+            if r.get("status") != "sent":
+                continue
+            r["to"] = names.get(r["chat_id"])
+            try:
+                from channels.layers import get_channel_layer
+
+                await get_channel_layer().group_send(
+                    f"chat_{r['chat_id']}", {"type": "chat.message", "data": payload}
+                )
+            except Exception as exc:  # noqa: BLE001 - the message is persisted; WS is best-effort
+                log.warning("follow-up broadcast failed for chat %s: %s", r["chat_id"], exc)
+            try:
+                import inngest
+
+                from orchestration.client import inngest_client
+
+                await inngest_client.send(
+                    inngest.Event(
+                        name="chat/inbound",
+                        data={"chat_id": r["chat_id"], "inbound_message_id": r["message_id"]},
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - never fail the send on this
+                log.warning("chat/inbound emit failed for chat %s: %s", r["chat_id"], exc)
+        return {"status": "sent", **res}
 
     # write_memory is a low-stakes write — no confirmation gate (revisions exempt memory).
     @tool
@@ -459,10 +602,11 @@ def copilot_tools(principal_id: int) -> list:
         check_mandate,
         list_my_buy_boxes,
         get_buy_box,
-        rank_buyers_for_listing,
+        rank_buyers_for_listings,
         find_buyers,
         assess_deal,
         read_memory,
+        list_chats,
         # writes (confirm-gated)
         create_listing,
         update_listing,
@@ -470,7 +614,8 @@ def copilot_tools(principal_id: int) -> list:
         create_buy_box,
         update_buy_box,
         delete_buy_box,
-        launch_outreach,
+        send_outreach,
+        send_chat_messages,
         # low-stakes write (no gate)
         write_memory,
     ]

@@ -87,6 +87,32 @@ def test_multiple_listing_attachments_accrue_in_one_chat():
     assert first["listing"]["title"] == "A home"
 
 
+@pytest.mark.django_db
+def test_post_agent_message_kind_attachment_and_dedup():
+    """The copilot follow-up seam: kind='agent' + sender=principal, listing attached,
+    and a repeated dedup_key is a silent no-op (resume-replay safety)."""
+    seller, buyer = _user("s2@x.com"), _user("b2@x.com")
+    lst = _listing(seller, "9 Follow-up Ln")
+    chat, _ = services.get_or_create_chat(seller.id, buyer.id)
+
+    saved = services.post_agent_message(
+        chat.id,
+        seller.id,
+        "Just checking in on 9 Follow-up Ln — any questions?",
+        attachment_listing_ids=[lst.id],
+        dedup_key="copilot:test-thread:1",
+    )
+    assert saved["duplicate"] is False
+    assert saved["kind"] == "agent" and saved["sender"] == seller.id
+    assert [a["listing_id"] for a in saved["attachments"]] == [lst.id]
+
+    replay = services.post_agent_message(
+        chat.id, seller.id, "Just checking in again", dedup_key="copilot:test-thread:1"
+    )
+    assert replay == {"duplicate": True}
+    assert Message.objects.filter(chat=chat).count() == 1
+
+
 # --- find-or-create over REST --------------------------------------------------
 @pytest.mark.django_db
 def test_rest_find_or_create_is_idempotent_and_posts_opener():

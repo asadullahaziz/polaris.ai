@@ -31,7 +31,9 @@ export type ConfirmPayload = {
     | "create_buy_box"
     | "update_buy_box"
     | "delete_buy_box"
-    | "launch_outreach"
+    | "launch_outreach" // legacy (pre-2026-07-07 cards in old timelines)
+    | "send_outreach"
+    | "send_chat_messages"
     | string;
   summary: string;
   proposal: Record<string, unknown>;
@@ -102,6 +104,68 @@ function OutreachProposal({ proposal }: { proposal: Record<string, unknown> }) {
   );
 }
 
+type OutreachTargetPreview = {
+  user_id: number;
+  name: string;
+  body: string;
+  listings: { listing_id: number; address: string | null; already_contacted: boolean }[];
+};
+
+function SendOutreachProposal({ proposal }: { proposal: Record<string, unknown> }) {
+  const recipients = (proposal.recipients as OutreachTargetPreview[]) ?? [];
+  return (
+    <div className="space-y-2">
+      {recipients.map((r, i) => (
+        <div key={i} className="rounded-md border p-3">
+          <p className="text-xs font-medium text-muted-foreground">To {r.name}</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {r.listings.map((l) => (
+              <Badge
+                key={l.listing_id}
+                variant={l.already_contacted ? "outline" : "secondary"}
+                className={l.already_contacted ? "line-through opacity-60" : ""}
+              >
+                {l.address || `Listing #${l.listing_id}`}
+                {l.already_contacted && " · already contacted"}
+              </Badge>
+            ))}
+          </div>
+          <p className="mt-2 whitespace-pre-wrap text-sm">{r.body}</p>
+        </div>
+      ))}
+      <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-500">
+        <AlertTriangle className="size-3.5" />
+        Approving sends this outreach immediately (already-contacted listings are skipped).
+      </p>
+    </div>
+  );
+}
+
+function SendMessagesProposal({ proposal }: { proposal: Record<string, unknown> }) {
+  const messages =
+    (proposal.messages as { chat_id: number; to: string; body: string; listing_ids?: number[] }[]) ??
+    [];
+  return (
+    <div className="space-y-2">
+      {messages.map((m, i) => (
+        <div key={i} className="rounded-md border p-3">
+          <p className="text-xs font-medium text-muted-foreground">To {m.to}</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm">{m.body}</p>
+          {(m.listing_ids?.length ?? 0) > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Attaches listing{m.listing_ids!.length > 1 ? "s" : ""} #{m.listing_ids!.join(", #")}
+            </p>
+          )}
+        </div>
+      ))}
+      <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-500">
+        <AlertTriangle className="size-3.5" />
+        Approving sends {messages.length > 1 ? "these messages" : "this message"} immediately.
+      </p>
+    </div>
+  );
+}
+
 export function ConfirmCard({
   payload,
   resolution,
@@ -129,6 +193,10 @@ export function ConfirmCard({
       <CardContent className="px-4">
         {action === "launch_outreach" ? (
           <OutreachProposal proposal={proposal} />
+        ) : action === "send_outreach" ? (
+          <SendOutreachProposal proposal={proposal} />
+        ) : action === "send_chat_messages" ? (
+          <SendMessagesProposal proposal={proposal} />
         ) : (
           <FieldGrid fields={fields} />
         )}

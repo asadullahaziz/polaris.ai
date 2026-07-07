@@ -16,7 +16,8 @@ crosses the disclosure boundary. Written by `chat.responder_service.log_action` 
 every commit / draft / escalate.
 
 `OutreachCampaign`/`OutreachRecipient` (added P5) are the seller's outreach ledger —
-one `launch_outreach` = one campaign for one listing → N **registered** buyers.
+one `send_outreach` = one campaign over one or more listings → N **registered** buyers,
+each buyer paired with exactly the listing(s) they matched.
 `OutreachRecipient` IS the delivery ledger: a partial-unique on SENT rows guarantees a
 listing reaches each buyer at most once, ever, across campaigns (a cancelled proposal
 doesn't block a later legitimate send). v2 rewire: registered users only (prospects are
@@ -187,11 +188,18 @@ CHANNELS = [
 
 
 class OutreachCampaign(models.Model):
-    """One `launch_outreach` = one campaign for one listing → N ranked buyers, staged
-    `awaiting_approval` until the seller approves the batch (the send gate)."""
+    """One `send_outreach` = one campaign → N buyers, each with the listing(s) they
+    matched (the per-(buyer, listing) sets live on the recipient rows), staged
+    `awaiting_approval` until the seller approves the batch (the send gate). `listing`
+    is set when the campaign covers exactly ONE listing (display convenience);
+    NULL = multi-listing."""
 
     listing = models.ForeignKey(
-        "catalog.Listing", on_delete=models.CASCADE, related_name="outreach_campaigns"
+        "catalog.Listing",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="outreach_campaigns",
     )
     seller = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="outreach_campaigns"

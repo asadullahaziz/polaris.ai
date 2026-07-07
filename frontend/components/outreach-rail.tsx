@@ -24,7 +24,14 @@ const STATUS_BADGE: Record<OutreachCampaign["status"], "default" | "secondary" |
   cancelled: "outline",
 };
 
-function RecipientRow({ r }: { r: OutreachRecipient }) {
+function campaignTitle(c: OutreachCampaign): string {
+  if (c.listing_address) return c.listing_address;
+  if (c.listing_addresses.length > 1)
+    return `${c.listing_addresses.length} listings — ${c.listing_addresses.join(" · ")}`;
+  return c.listing_addresses[0] || (c.listing ? `Listing #${c.listing}` : "Outreach");
+}
+
+function RecipientRow({ r, showListing }: { r: OutreachRecipient; showListing?: boolean }) {
   const icon =
     r.status === "sent" ? (
       <Check className="size-3 text-green-600" />
@@ -44,6 +51,11 @@ function RecipientRow({ r }: { r: OutreachRecipient }) {
           {icon}
         </span>
       </div>
+      {showListing && r.listing_address && (
+        <p className="mt-0.5 truncate text-[11px] text-muted-foreground/80">
+          ↳ {r.listing_address}
+        </p>
+      )}
       {r.rank_reason && <p className="mt-0.5 text-muted-foreground">{r.rank_reason}</p>}
     </li>
   );
@@ -87,20 +99,23 @@ export function OutreachRail({ className }: { className?: string }) {
             <p className="text-sm text-muted-foreground">No outreach yet.</p>
           )}
           {campaigns.map((c) => {
-            const pending = c.recipients.filter((r) => r.status === "pending").length;
+            // Multi-listing: several ledger rows per buyer. Count/act on distinct BUYERS
+            // and show which listing each row covers.
+            const multi = !c.listing_address && c.listing_addresses.length > 1;
+            const pending = new Set(
+              c.recipients.filter((r) => r.status === "pending").map((r) => r.recipient_user),
+            ).size;
             return (
               <div key={c.id} className="rounded-lg border p-2.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">
-                    {c.listing_address || `Listing #${c.listing}`}
-                  </span>
+                  <span className="truncate text-sm font-medium">{campaignTitle(c)}</span>
                   <Badge variant={STATUS_BADGE[c.status]} className="shrink-0">
                     {c.status.replace(/_/g, " ")}
                   </Badge>
                 </div>
                 <ul className="mt-2 space-y-1">
                   {c.recipients.map((r) => (
-                    <RecipientRow key={r.id} r={r} />
+                    <RecipientRow key={r.id} r={r} showListing={multi} />
                   ))}
                 </ul>
                 {c.status === "awaiting_approval" && (
