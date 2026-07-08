@@ -1,4 +1,3 @@
-# Polaris AI — one-command bring-up (implementation_plan §1, the non-negotiable).
 # `docker compose up` -> all services healthy; fresh clone reproduces the demo.
 name: polaris
 
