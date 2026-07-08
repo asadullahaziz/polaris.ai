@@ -1,16 +1,16 @@
 # Polaris AI — dev convenience targets. The canonical bring-up is `docker compose up`.
 .PHONY: up down build logs ps test migrate makemigrations shell psql spike-test fmt seed seed-reset
 
-up:            ## Bring the whole stack up (build if needed)
+start up:            ## Bring the whole stack up (build if needed)
 	docker compose up --build
 
-up-d:          ## Bring the stack up detached
+start-d up-d:          ## Bring the stack up detached
 	docker compose up --build -d
 
-down:          ## Stop and remove containers
+stop down:          ## Stop and remove containers
 	docker compose down
 
-down-v:        ## Stop and remove containers + volumes (fresh clone equivalent)
+stop-v down-v:        ## Stop and remove containers + volumes (fresh clone equivalent)
 	docker compose down -v
 
 build:
