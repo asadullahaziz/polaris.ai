@@ -3,6 +3,7 @@
 import {
   Building2,
   ChevronsUpDown,
+  Handshake,
   LogOut,
   MessageSquare,
   Moon,
@@ -44,6 +45,7 @@ const NAV = [
   { title: "Polaris AI", href: "/polaris-ai", icon: Sparkles },
   { title: "Listings", href: "/listings", icon: Building2 },
   { title: "Chat", href: "/chat", icon: MessageSquare },
+  { title: "Deals", href: "/deals", icon: Handshake },
   { title: "Buyers", href: "/buyers", icon: Users },
   { title: "Settings", href: "/settings", icon: Settings },
 ];

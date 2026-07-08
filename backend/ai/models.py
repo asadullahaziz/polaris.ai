@@ -124,6 +124,7 @@ AGENT_ACTION_TYPES = [
     ("sent", "sent"),  # an autonomous reply committed
     ("drafted", "drafted"),  # a reply parked for the principal's approval
     ("escalated", "escalated"),  # handed to the human, nothing posted to the counterparty
+    ("no_reply", "no_reply"),  # contentless inbound closed silently (nothing posted)
 ]
 
 

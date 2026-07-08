@@ -14,7 +14,6 @@ import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
-from catalog import services
 from catalog.models import BuyBox, BuyBoxGeo, Mandate
 from polaris_agent import dal
 
@@ -24,7 +23,9 @@ BOXES = "/api/buy-boxes/"
 
 
 def _user(email, **kw):
-    return User.objects.create_user(email=email, password="pw-12345678", is_email_verified=True, **kw)
+    return User.objects.create_user(
+        email=email, password="pw-12345678", is_email_verified=True, **kw
+    )
 
 
 def _client(user):

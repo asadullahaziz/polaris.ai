@@ -104,7 +104,7 @@ def test_agent_reply_cap_round_trips_through_me():
     u = _user("cap@x.com")
     c = _client(u)
 
-    assert c.get(ME).data["profile"]["agent_reply_cap"] == 3  # model default
+    assert c.get(ME).data["profile"]["agent_reply_cap"] == 6  # model default (2026-07-08)
 
     patched = c.patch(ME, {"agent_reply_cap": 5}, format="json")
     assert patched.status_code == 200

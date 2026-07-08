@@ -58,9 +58,7 @@ class AiChatViewSet(
         reopened chat shows a greyed 'expired' card (not a live one) and its composer isn't
         gated forever — no background job needed."""
         instance = self.get_object()
-        if dal._expire_pending_confirm_if_stale(
-            instance.id, settings.COPILOT_CONFIRM_TTL_SECONDS
-        ):
+        if dal._expire_pending_confirm_if_stale(instance.id, settings.COPILOT_CONFIRM_TTL_SECONDS):
             instance = self.get_object()  # re-load so messages + pending_confirm are current
         return Response(self.get_serializer(instance).data)
 

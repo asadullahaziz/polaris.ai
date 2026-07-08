@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from .models import Chat, ChatMember, Message, MessageAttachment, make_pair_key
@@ -140,7 +140,28 @@ def post_human_message(
     except IntegrityError:
         return {"duplicate": True}
     Chat.objects.filter(id=chat_id).update(updated_at=timezone.now())
+    # The awaited human returning reopens an escalated chat (ONLY the member the
+    # escalation waits on — the counterparty pressing again must not reopen it). Their
+    # own human message also resets their agent's reply cap, so cover genuinely resumes.
+    # A NULL escalated_for is a legacy escalation (pre-2026-07-08): any human reopens.
+    Chat.objects.filter(
+        models.Q(escalated_for__isnull=True) | models.Q(escalated_for_id=sender_id),
+        id=chat_id,
+        status="escalated",
+    ).update(status="open", escalated_for=None, updated_at=timezone.now())
+    _deal_bookkeeping(chat_id, sender_id, attachment_listing_ids)
     return {**serialize_message(msg), "duplicate": False}
+
+
+def _deal_bookkeeping(chat_id: int, sender_id: int | None, listing_ids) -> None:
+    """Mini-CRM seam for every persisted message (deals/service.py). Defensive: deal
+    tracking must never block message delivery."""
+    try:
+        from deals import service as deal_svc
+
+        deal_svc.on_message(chat_id, sender_id, listing_ids=listing_ids)
+    except Exception:  # noqa: BLE001
+        log.warning("deal bookkeeping failed for chat %s", chat_id, exc_info=True)
 
 
 def post_agent_message(
@@ -174,6 +195,7 @@ def post_agent_message(
     except IntegrityError:
         return {"duplicate": True}
     Chat.objects.filter(id=chat_id).update(updated_at=timezone.now())
+    _deal_bookkeeping(chat_id, sender_id, attachment_listing_ids)
     return {**serialize_message(msg), "duplicate": False}
 
 
@@ -244,11 +266,7 @@ def list_inbox(user_id: int) -> list[dict]:
 
 
 def chat_header(chat_id: int, user_id: int) -> dict | None:
-    chat = (
-        Chat.objects.filter(id=chat_id)
-        .prefetch_related("members__user__profile")
-        .first()
-    )
+    chat = Chat.objects.filter(id=chat_id).prefetch_related("members__user__profile").first()
     if chat is None or not any(m.user_id == user_id for m in chat.members.all()):
         return None
     return _serialize_chat_row(chat, user_id)

@@ -69,6 +69,7 @@ LOCAL_APPS = [
     "chat",
     "notifications",
     "ai",
+    "deals",
     "orchestration",
 ]
 

@@ -168,12 +168,34 @@ def test_escalate_sets_status_and_notifies_without_posting(pair):
 
     chat.refresh_from_db()
     assert chat.status == "escalated"
-    assert chat.terminal == "needs_decision"
+    # Escalation pauses, it doesn't kill (2026-07-08): no terminal; the awaited
+    # human's return reopens the chat.
+    assert chat.terminal is None
+    assert chat.escalated_for_id == p.id
     # No cross-boundary message is posted on escalation.
     assert Message.objects.filter(chat_id=chat.id).count() == n_before
     # The principal is notified; the counterparty is not.
     assert Notification.objects.filter(user=p, type="escalation", chat_id=chat.id).exists()
     assert not Notification.objects.filter(user=c, chat_id=chat.id).exists()
+
+
+@pytest.mark.django_db
+def test_escalated_chat_reopens_only_for_awaited_human(pair):
+    p, c, chat = pair
+    svc.escalate(chat.id, p.id, "needs a decision")
+    chat.refresh_from_db()
+    assert chat.status == "escalated"
+
+    # The counterparty pressing again does NOT reopen (no re-escalation farm).
+    services.post_human_message(chat.id, c.id, "any update?")
+    chat.refresh_from_db()
+    assert chat.status == "escalated"
+
+    # The awaited principal's own human message reopens the chat and clears the marker.
+    services.post_human_message(chat.id, p.id, "back now, looking at it")
+    chat.refresh_from_db()
+    assert chat.status == "open"
+    assert chat.escalated_for_id is None
 
 
 @pytest.mark.django_db
@@ -308,8 +330,6 @@ async def test_grace_window_still_stands_down_on_focus(settings):
     from chat.functions import thread_inbound
 
     step = _StubStep(focused={"data": {"chat_id": 7, "user_id": 1}})
-    res = await thread_inbound._handler(
-        _StubCtx({"chat_id": 7, "inbound_message_id": 1}, step)
-    )
+    res = await thread_inbound._handler(_StubCtx({"chat_id": 7, "inbound_message_id": 1}, step))
     assert step.calls == 1
     assert res == {"stood_down": "human present within grace"}

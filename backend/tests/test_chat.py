@@ -74,7 +74,9 @@ def test_multiple_listing_attachments_accrue_in_one_chat():
     l1, l2 = _listing(seller, "1 A St"), _listing(seller, "2 B St")
     chat, _ = services.get_or_create_chat(seller.id, buyer.id)
 
-    services.post_human_message(chat.id, seller.id, "here's the first", attachment_listing_ids=[l1.id])
+    services.post_human_message(
+        chat.id, seller.id, "here's the first", attachment_listing_ids=[l1.id]
+    )
     services.post_human_message(chat.id, seller.id, "and another", attachment_listing_ids=[l2.id])
 
     msgs = services.list_messages(chat.id, buyer.id)
@@ -121,7 +123,8 @@ def test_rest_find_or_create_is_idempotent_and_posts_opener():
     ca = _client(a)
 
     r1 = ca.post(
-        CHATS, {"counterparty_id": b.id, "body": "interested in your place", "listing_id": lst.id},
+        CHATS,
+        {"counterparty_id": b.id, "body": "interested in your place", "listing_id": lst.id},
         format="json",
     )
     assert r1.status_code == 201, r1.data
@@ -181,7 +184,9 @@ def test_messages_and_chat_scoped_to_members():
     assert cx.get(f"{CHATS}{chat.id}/").status_code == 404
     assert cx.get(CHATS).data == []
     # A non-member cannot post into the chat.
-    assert cx.post(f"{CHATS}{chat.id}/messages/", {"body": "sneak"}, format="json").status_code == 404
+    assert (
+        cx.post(f"{CHATS}{chat.id}/messages/", {"body": "sneak"}, format="json").status_code == 404
+    )
 
 
 # --- engine relationship signal (chat-pair basis) ------------------------------
@@ -191,16 +196,26 @@ def test_engine_relationships_uses_chat_pair():
     buyer = _user("rel_buyer@x.com", full_name="Warm Buyer")
 
     subj = Property.objects.create(
-        apn="relsubj", address_norm="rel subj", address_raw="rel subj",
-        geom=Point(-122.33, 47.60, srid=4326), property_type="sfr", beds=3, sqft=2000, condition=2,
+        apn="relsubj",
+        address_norm="rel subj",
+        address_raw="rel subj",
+        geom=Point(-122.33, 47.60, srid=4326),
+        property_type="sfr",
+        beds=3,
+        sqft=2000,
+        condition=2,
     )
     listing = Listing.objects.create(seller=seller, asking_price=Decimal("450000"), status="active")
     ListingProperty.objects.create(listing=listing, property=subj, asking_price=Decimal("450000"))
     # The buyer has a nearby recent purchase (so they enter the candidate pool).
     Sale.objects.create(
-        buyer=buyer, geom=Point(-122.33, 47.60, srid=4326), price=Decimal("440000"),
-        purchased_at=timezone.now().date() - dt.timedelta(days=30), cash_buyer=True,
-        disposition="flip", source="test",
+        buyer=buyer,
+        geom=Point(-122.33, 47.60, srid=4326),
+        price=Decimal("440000"),
+        purchased_at=timezone.now().date() - dt.timedelta(days=30),
+        cash_buyer=True,
+        disposition="flip",
+        source="test",
     )
 
     # No chat yet → relationship signal is cold.

@@ -39,7 +39,9 @@ from django.utils import timezone
 
 log = logging.getLogger(__name__)
 
-DEFAULT_REPLY_CAP = 3  # fallback N when the principal has no profile (revisions 2026-07-04)
+# Fallback N when the principal has no profile. Raised 3 → 6 (2026-07-08): 3 was a
+# pre-screen cap; a propose/counter exchange needs headroom before handing to the human.
+DEFAULT_REPLY_CAP = 6
 
 
 def dedup_key(chat_id: int, inbound_message_id: int) -> str:
@@ -78,9 +80,7 @@ def reply_cap_reached(chat_id: int, principal_id: int, *, n: int | None = None) 
         n = _principal_cap(principal_id)
 
     last_human_id = (
-        Message.objects.filter(
-            chat_id=chat_id, kind="human", sender_id=principal_id, status="sent"
-        )
+        Message.objects.filter(chat_id=chat_id, kind="human", sender_id=principal_id, status="sent")
         .order_by("-id")
         .values_list("id", flat=True)
         .first()
@@ -122,6 +122,33 @@ def log_action(
     )
 
 
+def _apply_deal_effects(
+    chat_id: int,
+    principal_id: int,
+    action: str,
+    disclosed_fields: dict | None,
+    *,
+    intent: str | None = None,
+    focal_listing_id: int | None = None,
+) -> None:
+    """Mini-CRM bookkeeping for one agent message (deals/service.py). Defensive like
+    `log_action`: a deals bug must never block or double a reply."""
+    try:
+        from deals import service as deal_svc
+
+        deal_svc.on_message(chat_id, principal_id)
+        deal_svc.apply_agent_action(
+            chat_id,
+            principal_id,
+            action,
+            disclosed_fields or {},
+            intent=intent,
+            focal_listing_id=focal_listing_id,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("deal bookkeeping failed for chat %s", chat_id, exc_info=True)
+
+
 @transaction.atomic
 def commit_reply(
     chat_id: int,
@@ -135,6 +162,8 @@ def commit_reply(
     reply_to_id: int | None = None,
     terminal: str | None = None,
     private_rationale: str | None = None,
+    intent: str | None = None,
+    focal_listing_id: int | None = None,
     presence_fn=None,
 ) -> dict:
     """The commit gate — the guarantee. Returns {status, ...}. Statuses:
@@ -180,7 +209,16 @@ def commit_reply(
             updates["terminal"] = terminal
         Chat.objects.filter(id=chat_id).update(**updates)
 
-    # System-of-record side effects (outside the lock is fine — they're additive).
+    # System-of-record side effects (outside the lock is fine — they're additive; the
+    # dedup-guarded insert above already returned on any replay, so none re-fire).
+    _apply_deal_effects(
+        chat_id,
+        principal_id,
+        action,
+        disclosed_fields,
+        intent=intent,
+        focal_listing_id=focal_listing_id,
+    )
     from notifications.models import Notification
 
     if counterparty_user_id is not None:
@@ -231,6 +269,7 @@ def persist_draft(
     inbound_message_id: int,
     reply_to_id: int | None = None,
     private_rationale: str | None = None,
+    approval_context: dict | None = None,
 ) -> dict:
     """Send-gate for `draft_for_approval` autonomy (architecture §5): the auto-responder
     only fires when the human is absent, so an approval-required level can't be satisfied
@@ -262,7 +301,7 @@ def persist_draft(
         user_id=principal_id,
         type="approval_required",
         chat_id=chat_id,
-        payload={"message_id": msg.id, "action": action},
+        payload={"message_id": msg.id, "action": action, **(approval_context or {})},
     )
     log_action(
         principal_id,
@@ -281,15 +320,22 @@ def escalate(
     principal_id: int,
     reason: str,
     *,
-    terminal: str | None = "needs_decision",
+    terminal: str | None = None,
 ) -> dict:
     """Hand to the human WITHOUT posting anything to the counterparty (architecture §5):
-    set the chat status + a notification. No cross-boundary message on escalation."""
+    set the chat status + a notification. No cross-boundary message on escalation.
+    `status=escalated` pauses auto-reply for the chat (no re-escalation spam);
+    `escalated_for` records whose return reopens it (chat.services.post_human_message).
+    No terminal by default (2026-07-08) — an escalated chat is paused, not dead."""
     from notifications.models import Notification
 
     from .models import Chat
 
-    updates = {"status": "escalated", "updated_at": timezone.now()}
+    updates = {
+        "status": "escalated",
+        "escalated_for_id": principal_id,
+        "updated_at": timezone.now(),
+    }
     if terminal is not None:
         updates["terminal"] = terminal
     Chat.objects.filter(id=chat_id).update(**updates)
@@ -340,7 +386,13 @@ def approve_draft(user_id: int, message_id: int) -> dict:
     msg.status = "sent"
     msg.sent_at = timezone.now()
     msg.save(update_fields=["status", "sent_at"])
-    Chat.objects.filter(id=msg.chat_id).update(updated_at=timezone.now())
+    chat_updates = {"updated_at": timezone.now()}
+    if msg.action == "decline":  # approved declines match auto-sent ones
+        chat_updates["terminal"] = "no_fit"
+    Chat.objects.filter(id=msg.chat_id).update(**chat_updates)
+    # The approved send is a real agent message — keep the CRM true on this path too
+    # (accept → agreed, decline → lost, disclosed offer recorded).
+    _apply_deal_effects(msg.chat_id, user_id, msg.action, msg.disclosed_fields)
     return {
         "status": "sent",
         "message_id": msg.id,

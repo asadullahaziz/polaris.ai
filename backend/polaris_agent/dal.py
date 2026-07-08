@@ -29,10 +29,14 @@ never leaks into `dal`.
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC
 from decimal import Decimal, InvalidOperation
 
 from asgiref.sync import sync_to_async
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+log = logging.getLogger(__name__)
 
 # Map an extracted condition label → the KC condition scale (1–5) the engine uses.
 _CONDITION_TO_INT = {"full_gut": 1, "cosmetic": 3, "turnkey": 5}
@@ -181,7 +185,6 @@ def _expire_pending_confirm_if_stale(ai_chat_id: int, ttl_seconds: int) -> bool:
     next send / resume, so no background job is needed (the orphaned LangGraph checkpoint is
     the deferred Redis/prune concern, not a correctness issue here)."""
     from datetime import datetime
-    from datetime import timezone as dt_timezone
 
     from django.utils import timezone
 
@@ -199,7 +202,7 @@ def _expire_pending_confirm_if_stale(ai_chat_id: int, ttl_seconds: int) -> bool:
     except ValueError:
         return False
     if created.tzinfo is None:  # guard a naive stamp
-        created = created.replace(tzinfo=dt_timezone.utc)
+        created = created.replace(tzinfo=UTC)
     if (timezone.now() - created).total_seconds() < ttl_seconds:
         return False
     _save_confirm_outcome(ai_chat_id, pending.get("value") or {}, "expired")
@@ -603,7 +606,9 @@ def _assess_deal_for_listing(listing_id: int, seller_id: int, strategy: str | No
     return assess_deal(listing_id, strategy=strategy)
 
 
-def _rank_buyers_for_listings(seller_id: int, listing_ids: list[int], limit_per_listing: int = 10) -> dict:
+def _rank_buyers_for_listings(
+    seller_id: int, listing_ids: list[int], limit_per_listing: int = 10
+) -> dict:
     """The multi-listing 'who matches what' read: per-buyer merged rankings over the
     seller's listings (each match keeps its per-listing score + reason), plus listing
     meta so the caller can narrate addresses. Ownership-checked per listing."""
@@ -613,7 +618,9 @@ def _rank_buyers_for_listings(seller_id: int, listing_ids: list[int], limit_per_
     ids = list(dict.fromkeys(int(x) for x in (listing_ids or [])))
     if not ids:
         return {"error": "no listing_ids given"}
-    owned = set(Listing.objects.filter(id__in=ids, seller_id=seller_id).values_list("id", flat=True))
+    owned = set(
+        Listing.objects.filter(id__in=ids, seller_id=seller_id).values_list("id", flat=True)
+    )
     errors = [
         {"listing_id": lid, "error": "not found or not yours"} for lid in ids if lid not in owned
     ]
@@ -633,9 +640,9 @@ def _rank_buyers_for_listings(seller_id: int, listing_ids: list[int], limit_per_
             {
                 "listing_id": lp.listing_id,
                 "address": lp.property.address_raw,
-                "asking_price": float(lp.listing.asking_price)
-                if lp.listing.asking_price is not None
-                else None,
+                "asking_price": (
+                    float(lp.listing.asking_price) if lp.listing.asking_price is not None else None
+                ),
             },
         )
     out = {
@@ -802,9 +809,11 @@ def _preview_chat_sends(principal_id: int, chat_ids: list[int]) -> dict[int, str
             "chat_id", flat=True
         )
     )
-    others = ChatMember.objects.filter(chat_id__in=mine).exclude(
-        user_id=principal_id
-    ).select_related("user")
+    others = (
+        ChatMember.objects.filter(chat_id__in=mine)
+        .exclude(user_id=principal_id)
+        .select_related("user")
+    )
     return {m.chat_id: m.user.display_name for m in others}
 
 
@@ -884,7 +893,11 @@ def _listing_public(listing, principal_id: int) -> dict:
     evaluates one it doesn't."""
     lp = listing.listingproperty_set.select_related("property").order_by("sort_order").first()
     prop = lp.property if lp else None
-    ask = listing.asking_price if listing.asking_price is not None else (lp.asking_price if lp else None)
+    ask = (
+        listing.asking_price
+        if listing.asking_price is not None
+        else (lp.asking_price if lp else None)
+    )
     return {
         "listing_id": listing.id,
         "title": listing.title,
@@ -979,9 +992,7 @@ def _in_play_mandates(principal_id: int, listings: list[dict]) -> list[dict]:
         out.extend(_mandate_dict(m) for m in Mandate.objects.filter(listing_id__in=owned_ids))
     out.extend(
         _mandate_dict(m)
-        for m in Mandate.objects.filter(
-            buy_box__buyer_id=principal_id, buy_box__is_active=True
-        )
+        for m in Mandate.objects.filter(buy_box__buyer_id=principal_id, buy_box__is_active=True)
     )
     return out
 
@@ -1052,9 +1063,7 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
     if inbound["sender_id"] is None:
         return {"skip": "inbound has no sender (system message)"}
 
-    member_ids = list(
-        ChatMember.objects.filter(chat_id=chat_id).values_list("user_id", flat=True)
-    )
+    member_ids = list(ChatMember.objects.filter(chat_id=chat_id).values_list("user_id", flat=True))
     if len(member_ids) != 2 or inbound["sender_id"] not in member_ids:
         return {"skip": "inbound sender is not one of the two chat members"}
 
@@ -1094,7 +1103,19 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
     mandates = _in_play_mandates(principal_id, listings)
     namespace = {"sell_side": "seller", "buy_side": "buyer"}.get(stance, "general")
 
+    # Mini CRM (2026-07-08): the focal deal's stage + standing agent-disclosed offers
+    # + honest-urgency count. PRIVATE context; defensive so a deals hiccup never
+    # blocks the turn.
+    deal_ctx = {"deal": None, "negotiation": None, "other_active_deals": 0}
+    try:
+        from deals import service as deal_svc
+
+        deal_ctx = deal_svc.responder_context(chat_id, focal_listing_id, principal_id)
+    except Exception:  # noqa: BLE001
+        log.warning("deals.responder_context failed; continuing without deal state")
+
     return {
+        **deal_ctx,
         "principal_id": principal_id,
         "counterparty_user_id": counterparty_user_id,
         "chat_id": chat_id,
@@ -1119,10 +1140,21 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
 
 def _responder_assess(listing_id: int, strategy: str | None) -> dict:
     """Deterministic wholesale verdict for the FOCAL listing (buy-side). No ownership
-    check — the focal listing is the counterparty's on the buy side."""
+    check — the focal listing is the counterparty's on the buy side. Attaches the
+    grounded `max_offer` (the price at which margin == threshold): the PRIVATE anchor
+    Stage 1 negotiates from — never disclosed, never in share_lines."""
     from matching.engine import assess_deal
 
-    return assess_deal(listing_id, strategy=strategy)
+    res = assess_deal(listing_id, strategy=strategy)
+    try:
+        arv = float(res["arv"])
+        rehab = float(res["est_rehab"])
+        fee = float(res["wholesale_fee"])
+        threshold = float(res["threshold"])
+        res["max_offer"] = int(arv - rehab - fee - threshold * arv)
+    except (KeyError, TypeError, ValueError):
+        pass  # thin comps / missing inputs → no grounded anchor
+    return res
 
 
 def _responder_estimate(listing_id: int) -> dict:
@@ -1139,15 +1171,63 @@ def _responder_estimate(listing_id: int) -> dict:
     prop = lp.property if lp else None
     if prop is None:
         return {}
+    # Both figures: as-is market value defends the asking price; ARV answers the
+    # wholesale buyer's "ARV supported by comps?" (share flags gate what crosses).
     val = estimate_value(prop, arv=False)
+    arv_val = estimate_value(prop, arv=True)
     comps = get_comps(prop)
     return {
         "value": val,
+        "arv": arv_val,
         "n_comps": comps.get("n"),
         "comps": comps.get("comps", [])[:5],
     }
 
 
+def _list_deals(
+    principal_id: int,
+    *,
+    side: str | None = None,
+    stage: str | None = None,
+    listing_id: int | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """The user's deal pipeline (mini CRM), same row shape as /api/deals/."""
+    from deals.views import _base_queryset, serialize_deal
+
+    qs = _base_queryset(principal_id)
+    if side == "selling":
+        qs = qs.filter(seller_id=principal_id)
+    elif side == "buying":
+        qs = qs.filter(buyer_id=principal_id)
+    if stage:
+        qs = qs.filter(stage=stage)
+    if listing_id is not None:
+        qs = qs.filter(listing_id=listing_id)
+    return [serialize_deal(d, principal_id) for d in qs[: max(1, min(limit, 200))]]
+
+
+def _update_deal_stage(principal_id: int, deal_id: int, stage: str) -> dict:
+    """Manual stage override, ownership-checked (buyer or seller)."""
+    from django.db.models import Q
+
+    from deals import service as deal_svc
+    from deals.models import Deal
+    from deals.views import serialize_deal
+
+    deal = Deal.objects.filter(
+        Q(buyer_id=principal_id) | Q(seller_id=principal_id), id=deal_id
+    ).first()
+    if deal is None:
+        return {"error": "deal not found"}
+    if stage not in deal_svc.ALL_STAGES:
+        return {"error": f"stage must be one of {list(deal_svc.ALL_STAGES)}"}
+    deal_svc.set_stage_manual(deal, stage)
+    return serialize_deal(deal, principal_id)
+
+
 responder_plan = sync_to_async(_responder_plan)
 responder_assess = sync_to_async(_responder_assess)
 responder_estimate = sync_to_async(_responder_estimate)
+list_deals = sync_to_async(_list_deals)
+update_deal_stage = sync_to_async(_update_deal_stage)

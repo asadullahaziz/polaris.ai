@@ -645,6 +645,55 @@ export const discardChatDraft = (chatId: number, message_id: number) =>
     body: JSON.stringify({ message_id }),
   }).then((r) => json<{ status: string; message_id: number }>(r));
 
+// ---- Deals (mini CRM) ------------------------------------------------------------------
+export type DealStage =
+  | "contacted"
+  | "engaged"
+  | "negotiating"
+  | "agreed"
+  | "closed"
+  | "lost";
+
+export type DealRow = {
+  id: number;
+  side: "selling" | "buying";
+  stage: DealStage;
+  stage_changed_at: string;
+  listing: {
+    id: number;
+    title: string | null;
+    address: string | null;
+    asking_price: number | null;
+    status: string;
+  };
+  counterparty: { id: number; name: string };
+  last_offer_by_buyer: number | null;
+  last_offer_by_seller: number | null;
+  agreed_price: number | null;
+  chat_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export const listDeals = (params?: {
+  side?: "selling" | "buying";
+  stage?: DealStage;
+  listing?: number;
+}) => {
+  const qs = new URLSearchParams();
+  if (params?.side) qs.set("side", params.side);
+  if (params?.stage) qs.set("stage", params.stage);
+  if (params?.listing) qs.set("listing", String(params.listing));
+  const suffix = qs.size ? `?${qs.toString()}` : "";
+  return apiFetch(`/api/deals/${suffix}`).then((r) => json<DealRow[]>(r));
+};
+
+export const updateDealStage = (id: number, stage: DealStage) =>
+  apiFetch(`/api/deals/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify({ stage }),
+  }).then((r) => json<DealRow>(r));
+
 // ---- Notifications -------------------------------------------------------------------
 export type Notification = {
   id: number;

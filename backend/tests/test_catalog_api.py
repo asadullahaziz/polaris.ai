@@ -211,12 +211,21 @@ def test_marketplace_visibility(client, other_client):
 def test_mutations_and_seller_tools_stay_owner_scoped(client, other_client):
     lid = client.post(
         LISTINGS, {"asking_price": "400000", "properties": [{"address": "1 A St"}]}, format="json"
-    ).data["id"]  # active → visible to the other user, but never editable
-    assert other_client.patch(f"{LISTINGS}{lid}/", {"title": "hijack"}, format="json").status_code == 404
-    assert other_client.put(f"{LISTINGS}{lid}/", {"title": "hijack"}, format="json").status_code == 404
+    ).data[
+        "id"
+    ]  # active → visible to the other user, but never editable
+    assert (
+        other_client.patch(f"{LISTINGS}{lid}/", {"title": "hijack"}, format="json").status_code
+        == 404
+    )
+    assert (
+        other_client.put(f"{LISTINGS}{lid}/", {"title": "hijack"}, format="json").status_code == 404
+    )
     assert other_client.get(f"{LISTINGS}{lid}/mandate/").status_code == 404
     assert (
-        other_client.put(f"{LISTINGS}{lid}/mandate/", {"floor_price": "1"}, format="json").status_code
+        other_client.put(
+            f"{LISTINGS}{lid}/mandate/", {"floor_price": "1"}, format="json"
+        ).status_code
         == 404
     )
     assert other_client.get(f"{LISTINGS}{lid}/valuation/").status_code == 404

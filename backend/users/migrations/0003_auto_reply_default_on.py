@@ -8,9 +8,7 @@ from django.db import migrations, models
 
 def enable_existing(apps, schema_editor):
     UserProfile = apps.get_model("users", "UserProfile")
-    UserProfile.objects.filter(auto_reply_when_away=False).update(
-        auto_reply_when_away=True
-    )
+    UserProfile.objects.filter(auto_reply_when_away=False).update(auto_reply_when_away=True)
 
 
 class Migration(migrations.Migration):
