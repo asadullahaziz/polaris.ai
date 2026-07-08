@@ -142,9 +142,9 @@ See `.claude/docs/architecture.md` and `.claude/context/data_model_decisions.md`
 
 **Resolved during Phase 0** (see `implementation_plan.md` §3): **auth = session cookies**
 (Django sessions + DRF `SessionAuthentication`; WS auth free via Channels'
-`AuthMiddlewareStack`), **media = MinIO** in compose via `django-storages` (S3 API,
-swappable), schema authored as **Django models + migrations** (canonical, matched 1:1 to
-the DDL), Inngest **kept**. ASGI server = **uvicorn**; SPA cross-origin handled by
+`AuthMiddlewareStack`), **media = URL-only** (no object storage in the demo — MinIO was
+removed 2026-07-08; `ListingMedia` stores URLs), schema authored as **Django models +
+migrations** (canonical, matched 1:1 to the DDL), Inngest **kept**. ASGI server = **uvicorn**; SPA cross-origin handled by
 **CORS + credentials** (SameSite=Lax works same-site on localhost).
 
 **Still not decided** (see `.claude/context/PRODUCT.md` §6/§8): #5 provider (OpenRouter
@@ -178,14 +178,14 @@ backend/                 Django 5.2 ASGI project (one deployable)
   seed/data/             king_county_sales.csv (P1 seed_kc source)
   tests/                 P0 spike tests (the gate)
 frontend/                Next.js 15 App Router (Tailwind 4, TanStack Query, session+CSRF client)
-docker-compose.yml       6 services, one .env; `docker compose up` = the whole stack
+docker-compose.yml       5 services, one .env; `docker compose up` = the whole stack
 ```
 
 ## Commands
 
 - **Bring up the whole stack:** `docker compose up --build` (or `make up` / `make up-d`). Frontend
-  on http://localhost:3000, API on http://localhost:8000, Inngest dev UI on :8288, MinIO
-  console on :9001. First boot generates migrations in-container, migrates, creates a demo
+  on http://localhost:3000, API on http://localhost:8000, Inngest dev UI on :8288.
+  First boot generates migrations in-container, migrates, creates a demo
   login (`demo` / `demo12345`) + P0 geo fixtures, and runs `seed_kc` — the **Kessler County
   demo world** (~3.2k properties across 8 fictional towns, every one with a resolvable street
   address; archetype-varied buyer personas). The seed prints a demo cheat-sheet (addresses +

@@ -167,7 +167,7 @@ class ListingProperty(models.Model):
 
 
 class ListingMedia(models.Model):
-    """Photos/documents for a listing (URL only; bytes in object storage / MinIO)."""
+    """Photos/documents for a listing (URL only; no object storage in the demo)."""
 
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name="media")
     kind = models.TextField(default="photo", choices=MEDIA_KINDS)

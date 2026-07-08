@@ -164,7 +164,7 @@ class Message(models.Model):
 class MessageAttachment(models.Model):
     """A listing shared inside a message — FIRST-CLASS responder context (Graph 2 reads
     every attachment to resolve the focal listing), not decoration. `kind=listing` is
-    wired now; file/photo (→ MinIO) are reserved."""
+    wired now; file/photo are reserved."""
 
     message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="attachments")
     kind = models.TextField(default="listing", choices=ATTACHMENT_KINDS)
