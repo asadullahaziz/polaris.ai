@@ -31,6 +31,8 @@ function describe(n: Notification): string {
     case "outreach_received":
       return "A seller reached out with a property";
     case "approval_required":
+      if (typeof n.payload.recommendation === "string")
+        return n.payload.recommendation; // e.g. "Offer $612,000 clears your floor…"
       return n.payload.campaign_id != null
         ? "Outreach campaign awaiting your approval"
         : "Your agent drafted a reply for approval";

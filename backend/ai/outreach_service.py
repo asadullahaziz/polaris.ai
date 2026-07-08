@@ -30,11 +30,14 @@ and the one post-fan-out summary (`ai/functions.py`).
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import F, Max
 from django.utils import timezone
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -57,10 +60,7 @@ def build_opener(deals: list[tuple], name: str) -> str:
     if len(phrases) == 1:
         middle = f"an off-market deal that fits what you buy: {phrases[0]}"
     else:
-        middle = (
-            f"{len(phrases)} off-market deals that fit what you buy: "
-            + "; ".join(phrases)
-        )
+        middle = f"{len(phrases)} off-market deals that fit what you buy: " + "; ".join(phrases)
     return f"Hi {first}, I've got {middle} — priced below recent comps. Want the numbers?"
 
 
@@ -75,6 +75,7 @@ def launch_outreach(seller_id: int, recipients: list[dict], *, copilot_ai_chat_i
     Validation is strict (any foreign listing / unknown user fails the whole launch);
     already-contacted (buyer, listing) pairs are staged as skipped, never re-sent."""
     from django.contrib.auth import get_user_model
+
     from catalog.models import Listing, ListingProperty
     from matching.engine import rank_buyers
     from notifications.models import Notification
@@ -241,7 +242,6 @@ def send_to_buyer(campaign_id: int, user_id: int) -> dict:
     (a buyer whose pairs ALL drop gets no message at all). Safe to replay (Inngest
     at-least-once): flips + message + notification are one transaction, and the opener
     insert is idempotent under `outreach:c{campaign}:u{buyer}`."""
-    from chat.models import Message
 
     from .models import OutreachRecipient
 
@@ -306,6 +306,22 @@ def send_to_buyer(campaign_id: int, user_id: int) -> dict:
                 "campaign_id": campaign_id,
             },
         )
+    # Mini CRM: every sent (listing, buyer) pair opens a pipeline deal. Idempotent
+    # under the (listing, buyer) unique constraint; defensive so a deals bug never
+    # fails the fan-out step.
+    try:
+        from deals.service import ensure_deal
+
+        for r in sent_rows:
+            ensure_deal(
+                listing_id=r.listing_id,
+                buyer_id=user_id,
+                seller_id=rows[0].campaign.seller_id,
+                chat_id=chat.id,
+                stage="contacted",
+            )
+    except Exception:  # noqa: BLE001
+        log.warning("deal creation failed for campaign %s buyer %s", campaign_id, user_id)
     return {
         "status": "sent" if (created or newly_flipped) else "already_sent",
         "chat_id": chat.id,
@@ -395,9 +411,7 @@ def campaign_dispatch_info(campaign_id: int) -> dict | None:
         "copilot_ai_chat_id": c.copilot_ai_chat_id,
         "status": c.status,
         "listing_ids": listing_ids,
-        "listing_addresses": [
-            addresses.get(lid, f"listing {lid}") for lid in listing_ids
-        ],
+        "listing_addresses": [addresses.get(lid, f"listing {lid}") for lid in listing_ids],
         "buyer_ids": buyer_ids,
     }
 

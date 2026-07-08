@@ -230,6 +230,7 @@ def test_tool_suite_covers_reads_and_confirm_gated_writes(user):
         "assess_deal",
         "read_memory",
         "list_chats",
+        "list_deals",
     }
     assert expected_reads <= names
     # Every declared write tool is present and marked confirm-gated.
@@ -448,7 +449,12 @@ def test_pending_confirm_dal_roundtrip(user):
         "needs_title": True,
         "first_body": "list 1 A St",
         "ids": ["abc123"],
-        "value": {"kind": "confirm_write", "action": "create_listing", "summary": "x", "proposal": {}},
+        "value": {
+            "kind": "confirm_write",
+            "action": "create_listing",
+            "summary": "x",
+            "proposal": {},
+        },
     }
     dal._save_pending_confirm(chat_id, payload)
     loaded = dal._load_pending_confirm(chat_id)

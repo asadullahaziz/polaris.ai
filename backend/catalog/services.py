@@ -28,6 +28,7 @@ def _to_decimal(v):
     except (InvalidOperation, ValueError):
         return None
 
+
 # Street-suffix canonicalization so "1 Maple Ave" and "1 maple avenue" normalize equal.
 _SUFFIXES = {
     "avenue": "ave",
@@ -263,7 +264,14 @@ _BOX_SCALAR_FIELDS = (
     "max_rehab_cost",
     "property_types",
 )
-_BOX_DECIMAL_FIELDS = {"price_min", "price_max", "arv_min", "arv_max", "baths_min", "max_rehab_cost"}
+_BOX_DECIMAL_FIELDS = {
+    "price_min",
+    "price_max",
+    "arv_min",
+    "arv_max",
+    "baths_min",
+    "max_rehab_cost",
+}
 
 
 def _geo_public(g: BuyBoxGeo) -> dict:

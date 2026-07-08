@@ -50,9 +50,7 @@ def test_seed_kc_addresses_resolve():
     promise): no legacy `kc:` norms remain, and a listing's own address resolves
     through BOTH the dedup lookup and the geo resolver the rank endpoint uses."""
     call_command("seed_kc")
-    assert not Property.objects.filter(
-        county_fips="53033", address_norm__startswith="kc:"
-    ).exists()
+    assert not Property.objects.filter(county_fips="53033", address_norm__startswith="kc:").exists()
 
     listing = Listing.objects.filter(status="active").order_by("id").first()
     assert listing is not None

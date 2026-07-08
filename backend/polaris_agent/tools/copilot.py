@@ -42,6 +42,7 @@ WRITE_TOOL_NAMES = {
     "delete_buy_box",
     "send_outreach",
     "send_chat_messages",
+    "update_deal_stage",
 }
 
 
@@ -596,6 +597,29 @@ def copilot_tools(principal_id: int) -> list:
                 log.warning("chat/inbound emit failed for chat %s: %s", r["chat_id"], exc)
         return {"status": "sent", **res}
 
+    @tool
+    async def list_deals(
+        side: str | None = None, stage: str | None = None, listing_id: int | None = None
+    ) -> list:
+        """The user's deal pipeline (mini CRM): one deal per (listing, buyer) with a
+        stage (contacted, engaged, negotiating, agreed, closed, lost), the standing
+        disclosed offers, and the linked chat. Filter by side ('selling' | 'buying'),
+        stage, or listing_id."""
+        return await dal.list_deals(principal_id, side=side, stage=stage, listing_id=listing_id)
+
+    @tool
+    async def update_deal_stage(deal_id: int, stage: str) -> dict:
+        """Manually move a deal to a stage (contacted, engaged, negotiating, agreed,
+        closed, lost) — e.g. mark it closed after papers are signed, or lost if the
+        buyer went dark. Requires the user's confirmation."""
+        if not _confirm(
+            "update_deal_stage",
+            f"Move deal #{deal_id} to {stage!r}",
+            {"deal_id": deal_id, "stage": stage},
+        ):
+            return {"status": "cancelled", "action": "update_deal_stage"}
+        return await dal.update_deal_stage(principal_id, deal_id, stage)
+
     # write_memory is a low-stakes write — no confirmation gate (revisions exempt memory).
     @tool
     async def write_memory(content: str, namespace: str = "general") -> dict:
@@ -620,6 +644,7 @@ def copilot_tools(principal_id: int) -> list:
         assess_deal,
         read_memory,
         list_chats,
+        list_deals,
         # writes (confirm-gated)
         create_listing,
         update_listing,
@@ -629,6 +654,7 @@ def copilot_tools(principal_id: int) -> list:
         delete_buy_box,
         send_outreach,
         send_chat_messages,
+        update_deal_stage,
         # low-stakes write (no gate)
         write_memory,
     ]

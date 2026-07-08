@@ -29,37 +29,6 @@ services:
       timeout: 3s
       retries: 20
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    volumes:
-      - miniodata:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-
-  # One-shot: create the media bucket so uploads (P1+) have a home. Offline.
-  minio-setup:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_started
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      S3_BUCKET: ${S3_BUCKET:-polaris-media}
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD}; do echo 'waiting for minio'; sleep 1; done;
-      mc mb --ignore-existing local/$${S3_BUCKET};
-      mc anonymous set download local/$${S3_BUCKET} || true;
-      echo 'minio bucket ready';
-      "
-    restart: "no"
-
   backend:
     build:
       context: ./backend
@@ -73,8 +42,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_started
     ports:
       - "8000:8000"
     volumes:
@@ -116,4 +83,3 @@ services:
 
 volumes:
   pgdata:
-  miniodata:

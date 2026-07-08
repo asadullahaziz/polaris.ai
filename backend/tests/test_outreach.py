@@ -296,9 +296,7 @@ def test_ledger_partial_overlap_sends_only_the_new_listing():
     # Campaign 2 selects BOTH listings for the same buyer.
     r2 = _launch(seller, [_spec(buyer, la, lb)])
     assert r2["pending_count"] == 1 and r2["skipped_count"] == 1  # A skipped at launch
-    statuses = {
-        row["listing_id"]: row["status"] for row in r2["recipients"][0]["listings"]
-    }
+    statuses = {row["listing_id"]: row["status"] for row in r2["recipients"][0]["listings"]}
     assert statuses[la.id] == "skipped_already_contacted" and statuses[lb.id] == "pending"
 
     svc.approve_campaign(seller.id, r2["campaign_id"])
@@ -457,7 +455,9 @@ def test_preview_outreach_flags_already_contacted_pairs():
     assert flags == {la.id: True, lb.id: False}
     assert prev["recipients"][0]["name"] == "Betty Buyer"
     # Validation errors surface as {error} (no confirm card).
-    assert "error" in dal._preview_outreach(seller.id, [{"user_id": 999999, "listing_ids": [la.id]}])
+    assert "error" in dal._preview_outreach(
+        seller.id, [{"user_id": 999999, "listing_ids": [la.id]}]
+    )
 
 
 class _S(TypedDict, total=False):
@@ -496,9 +496,7 @@ async def test_send_outreach_tool_declined_commits_nothing(
     graph = _one_tool_graph(checkpointer, tool)
     cfg = {"configurable": {"thread_id": "outreach-decline-1"}}
     args = {
-        "recipients": [
-            {"user_id": buyer.id, "listing_ids": [listing.id], "body": "custom opener"}
-        ]
+        "recipients": [{"user_id": buyer.id, "listing_ids": [listing.id], "body": "custom opener"}]
     }
 
     # Validates + resolves, then pauses at the confirm interrupt — nothing persisted yet.

@@ -47,8 +47,17 @@ attachments, outreach.
 - *"search properties on Alder"*
 - *"find buyers for 122 Hollis Ct, Norhaven"*
 - *"reach out to the best buyers for my Hollis Ct listing"* → approve the outreach,
-  then watch offline buyers' away-assistants reply (qualify/hold/decline) in **Inbox**.
+  then watch offline buyers' away-agents reply in **Chat** — pointed diligence
+  questions and real offers in a human voice (the "Polaris" badge is the only tell),
+  with the seller's agent answering from real comps and countering above the floor.
   Opening a thread and typing is the human takeover.
+
+**4. Deals (mini CRM).** Every outreach/inquiry opens a deal on **/deals**: watch
+stages advance (contacted → engaged → negotiating) as the agents talk. An in-bound
+offer that clears your floor becomes an **accept draft** + a notification with the
+recommendation — the human signs; approving it marks the deal **agreed**. Ask the
+copilot *"where are my deals?"* or *"mark deal #N closed"*. Unanswerable questions
+(liens, roof age) post nothing and escalate to your bell instead.
 
 ## Useful knobs
 

@@ -131,7 +131,9 @@ class ListingViewSet(
         ser.is_valid(raise_exception=True)
         listing = services.create_listing(request.user, ser.validated_data)
         detail = self.get_queryset().get(id=listing.id)
-        return Response(ListingDetailSerializer(detail, context={"request": request}).data, status=201)
+        return Response(
+            ListingDetailSerializer(detail, context={"request": request}).data, status=201
+        )
 
     def update(self, request, *args, **kwargs):
         listing = self.get_object()  # 404s if not owned

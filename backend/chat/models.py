@@ -69,6 +69,16 @@ class Chat(models.Model):
     pair_key = models.TextField()  # canonical "minId:maxId" of the two members
     status = models.TextField(default="open", choices=CHAT_STATUSES)
     terminal = models.TextField(null=True, blank=True, choices=TERMINALS)
+    # Who an escalation waits on (2026-07-08): set by responder_service.escalate; ONLY
+    # this member's next human message reopens the chat — the counterparty pressing
+    # again can't reopen-and-re-escalate forever.
+    escalated_for = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -154,11 +164,9 @@ class Message(models.Model):
 class MessageAttachment(models.Model):
     """A listing shared inside a message — FIRST-CLASS responder context (Graph 2 reads
     every attachment to resolve the focal listing), not decoration. `kind=listing` is
-    wired now; file/photo (→ MinIO) are reserved."""
+    wired now; file/photo are reserved."""
 
-    message = models.ForeignKey(
-        Message, on_delete=models.CASCADE, related_name="attachments"
-    )
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="attachments")
     kind = models.TextField(default="listing", choices=ATTACHMENT_KINDS)
     listing = models.ForeignKey(
         "catalog.Listing",

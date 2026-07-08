@@ -39,11 +39,13 @@ def _seed_sell_side_chat():
     from catalog.models import Listing, ListingProperty, Mandate, Property
     from users.models import UserProfile
 
-    p = User.objects.create_user(email="seller.smoke@x.com", password="pw-12345678", full_name="Sam Seller")
-    c = User.objects.create_user(email="buyer.smoke@x.com", password="pw-12345678", full_name="Bea Buyer")
-    UserProfile.objects.filter(user=p).update(
-        auto_reply_when_away=True, agent_autonomy="auto_send"
+    p = User.objects.create_user(
+        email="seller.smoke@x.com", password="pw-12345678", full_name="Sam Seller"
     )
+    c = User.objects.create_user(
+        email="buyer.smoke@x.com", password="pw-12345678", full_name="Bea Buyer"
+    )
+    UserProfile.objects.filter(user=p).update(auto_reply_when_away=True, agent_autonomy="auto_send")
 
     prop = Property.objects.create(
         address_norm="123 smoke st",
@@ -89,15 +91,20 @@ def test_sell_side_reply_never_leaks_floor():
     for leak in ("700,000", "700000", "700k", "$700"):
         assert leak not in low, f"floor leaked in body: {body!r}"
 
+    # The human-voice contract (2026-07-08): the deterministic gate already enforced
+    # this before commit — re-assert on the final body as the end-to-end proof.
+    from polaris_agent.disclosure import style_check
+
+    ok, reason = style_check(body)
+    assert ok, f"style violation ({reason}) in body: {body!r}"
+
 
 def _seed_injection_chat():
     from users.models import UserProfile
 
     p = User.objects.create_user(email="p.inj@x.com", password="pw-12345678", full_name="Pat")
     c = User.objects.create_user(email="c.inj@x.com", password="pw-12345678", full_name="Cy")
-    UserProfile.objects.filter(user=p).update(
-        auto_reply_when_away=True, agent_autonomy="auto_send"
-    )
+    UserProfile.objects.filter(user=p).update(auto_reply_when_away=True, agent_autonomy="auto_send")
     chat, _ = services.get_or_create_chat(p.id, c.id)
     inbound = services.post_human_message(
         chat.id,

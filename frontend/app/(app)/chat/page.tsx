@@ -56,6 +56,9 @@ const ACTION_CHIP: Record<string, { label: string; cls: string }> = {
   ask: { label: "Asked for info", cls: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" },
   inform: { label: "Answered", cls: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" },
   escalate: { label: "Escalated", cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" },
+  propose: { label: "Made an offer", cls: "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300" },
+  counter: { label: "Countered", cls: "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300" },
+  accept: { label: "Accepted", cls: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300" },
 };
 
 function ChatPageInner() {
@@ -185,6 +188,7 @@ function ChatPageInner() {
     try {
       await approveChatDraft(activeId, messageId);
       setMessages(await getChatMessages(activeId));
+      qc.invalidateQueries({ queryKey: ["deals"] }); // approved accept/decline moves the deal
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Approve failed");
     }

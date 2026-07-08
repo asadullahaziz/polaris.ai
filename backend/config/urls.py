@@ -29,6 +29,7 @@ urlpatterns = [
     path("api/", include("catalog.urls")),  # /api/listings/... + /api/properties/lookup
     path("api/ai/", include("ai.urls")),  # /api/ai/chats/... + /api/ai/memory/
     path("api/", include("chat.urls")),  # /api/chats/...
+    path("api/", include("deals.urls")),  # /api/deals/... (mini CRM)
     path("api/", include("notifications.urls")),  # /api/notifications/...
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

@@ -100,8 +100,18 @@ TOWN_FALLBACK = "Kessler"
 # normalize_address suffix/directional tokens; suffixes are already canonical
 # short forms so normalize(raw) round-trips cleanly.
 STREET_NAMES = [
-    "Alder", "Maple", "Cedar", "Bramble", "Juniper", "Rowan",
-    "Hollis", "Ashfern", "Kestrel", "Larkspur", "Meridian", "Quarry",
+    "Alder",
+    "Maple",
+    "Cedar",
+    "Bramble",
+    "Juniper",
+    "Rowan",
+    "Hollis",
+    "Ashfern",
+    "Kestrel",
+    "Larkspur",
+    "Meridian",
+    "Quarry",
 ]
 STREET_SUFFIXES = ["St", "Ave", "Ln", "Dr", "Ct"]  # 12 × 5 = 60 streets per town
 
@@ -110,14 +120,50 @@ STREET_SUFFIXES = ["St", "Ave", "Ln", "Dr", "Ct"]  # 12 × 5 = 60 streets per to
 # of look-alike buyers. window_mo = (newest, oldest) months back for sampled sales;
 # band = price percentile range within the buyer's home town.
 ARCHETYPES = {
-    "anchor_flipper": {"strategy": "fix_flip", "n": (12, 15), "window_mo": (0, 6), "band": (0.25, 0.75), "cash_p": 0.95},
-    "steady_landlord": {"strategy": "buy_hold", "n": (6, 9), "window_mo": (0, 24), "band": (0.25, 0.75), "cash_p": 0.30},
-    "brrrr_operator": {"strategy": "brrrr", "n": (5, 8), "window_mo": (0, 12), "band": (0.10, 0.50), "cash_p": 0.60},
-    "newcomer": {"strategy": None, "n": (2, 3), "window_mo": (0, 3), "band": (0.10, 0.60), "cash_p": 0.90},
-    "lapsed": {"strategy": None, "n": (7, 10), "window_mo": (12, 24), "band": (0.40, 0.90), "cash_p": 0.40},
+    "anchor_flipper": {
+        "strategy": "fix_flip",
+        "n": (12, 15),
+        "window_mo": (0, 6),
+        "band": (0.25, 0.75),
+        "cash_p": 0.95,
+    },
+    "steady_landlord": {
+        "strategy": "buy_hold",
+        "n": (6, 9),
+        "window_mo": (0, 24),
+        "band": (0.25, 0.75),
+        "cash_p": 0.30,
+    },
+    "brrrr_operator": {
+        "strategy": "brrrr",
+        "n": (5, 8),
+        "window_mo": (0, 12),
+        "band": (0.10, 0.50),
+        "cash_p": 0.60,
+    },
+    "newcomer": {
+        "strategy": None,
+        "n": (2, 3),
+        "window_mo": (0, 3),
+        "band": (0.10, 0.60),
+        "cash_p": 0.90,
+    },
+    "lapsed": {
+        "strategy": None,
+        "n": (7, 10),
+        "window_mo": (12, 24),
+        "band": (0.40, 0.90),
+        "cash_p": 0.40,
+    },
     # Registered-only: buy-box covers the home town but purchase history sits in the
     # NEIGHBORING town — ranks low with a distinct "no local history" story.
-    "out_of_towner": {"strategy": None, "n": (2, 4), "window_mo": (0, 12), "band": (0.25, 0.75), "cash_p": 0.50},
+    "out_of_towner": {
+        "strategy": None,
+        "n": (2, 4),
+        "window_mo": (0, 12),
+        "band": (0.25, 0.75),
+        "cash_p": 0.50,
+    },
 }
 # Prospects (history-only) cycle the middle of the pack; registered buyers get the
 # top archetype in round 0 and a deliberately weak one in round 1, so the ranked
@@ -126,16 +172,48 @@ PROSPECT_ROUNDS = ["steady_landlord", "brrrr_operator", "newcomer"]
 BUYER_ROUND_1 = ["lapsed", "out_of_towner"]  # alternated by cluster parity
 
 PROSPECT_NAMES = [
-    "Marcus Webb", "Dana Whitfield", "Ray Okafor", "Lena Vasquez", "Tom Berrigan",
-    "Aisha Clarke", "Victor Hale", "Priya Raman", "Cole Jastrow", "Maribel Santos",
-    "Doug Fenwick", "Renee Caldwell", "Sam Oyelaran", "Kate Brennan", "Omar Haddad",
-    "Jill Navarro", "Pete Lindqvist", "Tanya Brooks", "Hugo Reyes", "Wendy Marsh",
-    "Felix Grant", "Nora Adeyemi", "Chad Willis", "Ivy Chen", "Gus Palmer",
+    "Marcus Webb",
+    "Dana Whitfield",
+    "Ray Okafor",
+    "Lena Vasquez",
+    "Tom Berrigan",
+    "Aisha Clarke",
+    "Victor Hale",
+    "Priya Raman",
+    "Cole Jastrow",
+    "Maribel Santos",
+    "Doug Fenwick",
+    "Renee Caldwell",
+    "Sam Oyelaran",
+    "Kate Brennan",
+    "Omar Haddad",
+    "Jill Navarro",
+    "Pete Lindqvist",
+    "Tanya Brooks",
+    "Hugo Reyes",
+    "Wendy Marsh",
+    "Felix Grant",
+    "Nora Adeyemi",
+    "Chad Willis",
+    "Ivy Chen",
+    "Gus Palmer",
 ]
 BUYER_NAMES = [
-    "Erin Kowalski", "Andre Bishop", "Sofia Marchetti", "Jake Tran", "Monica Ellison",
-    "Dev Patel", "Claire Rutkowski", "Luis Herrera", "Becca Stone", "Nate Kimura",
-    "Olivia Frost", "Reggie Coleman", "Hana Yusuf", "Brett Salazar", "Gina Moretti",
+    "Erin Kowalski",
+    "Andre Bishop",
+    "Sofia Marchetti",
+    "Jake Tran",
+    "Monica Ellison",
+    "Dev Patel",
+    "Claire Rutkowski",
+    "Luis Herrera",
+    "Becca Stone",
+    "Nate Kimura",
+    "Olivia Frost",
+    "Reggie Coleman",
+    "Hana Yusuf",
+    "Brett Salazar",
+    "Gina Moretti",
 ]
 SELLER_NAMES = ["Walt Emerson", "Rosa Delgado", "Curtis Vann"]
 
@@ -205,9 +283,7 @@ class Command(BaseCommand):
             return
 
         # apn (== KC id) → property pk, for linking sales/listings.
-        pk_by_apn = dict(
-            Property.objects.filter(county_fips=COUNTY_FIPS).values_list("apn", "id")
-        )
+        pk_by_apn = dict(Property.objects.filter(county_fips=COUNTY_FIPS).values_list("apn", "id"))
         for c in clusters:
             kept = []
             for r in c["rows"]:
@@ -519,8 +595,8 @@ class Command(BaseCommand):
         # Demo cheat-sheet (DB-derived so it prints on the sentinel-skip path too).
         listed = [
             lp.property.address_raw
-            for l in Listing.objects.filter(status="active").order_by("id")[:3]
-            if (lp := l.listingproperty_set.order_by("sort_order").first()) is not None
+            for lst in Listing.objects.filter(status="active").order_by("id")[:3]
+            if (lp := lst.listingproperty_set.order_by("sort_order").first()) is not None
         ]
         unlisted = list(
             Property.objects.filter(county_fips=COUNTY_FIPS, listingproperty__isnull=True)

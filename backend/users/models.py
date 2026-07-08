@@ -103,11 +103,11 @@ class UserProfile(models.Model):
     #                          instead. Bounds the agent↔agent away-cover loop; read
     #                          as the default `n` in `reply_cap_reached` (P4).
     auto_reply_when_away = models.BooleanField(default=True)
-    agent_autonomy = models.CharField(
-        max_length=32, default="auto_send", choices=AUTONOMY_CHOICES
-    )
+    agent_autonomy = models.CharField(max_length=32, default="auto_send", choices=AUTONOMY_CHOICES)
     agent_instructions = models.TextField(blank=True, default="")
-    agent_reply_cap = models.PositiveSmallIntegerField(default=3)
+    # Default 6 (2026-07-08, was 3): negotiation needs a propose/counter exchange's
+    # worth of headroom before the agent hands to the human.
+    agent_reply_cap = models.PositiveSmallIntegerField(default=6)
 
     updated_at = models.DateTimeField(auto_now=True)
 

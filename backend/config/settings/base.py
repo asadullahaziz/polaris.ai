@@ -69,6 +69,7 @@ LOCAL_APPS = [
     "chat",
     "notifications",
     "ai",
+    "deals",
     "orchestration",
 ]
 
@@ -198,36 +199,6 @@ CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
 )
 CORS_ALLOW_CREDENTIALS = True
-
-# ---------------------------------------------------------------------------
-# Object storage (MinIO in compose; swappable to S3/R2/GCS by config).
-# Inert in P0 — no uploads yet.
-# ---------------------------------------------------------------------------
-AWS_STORAGE_BUCKET_NAME = env("S3_BUCKET", "polaris-media")
-AWS_S3_ENDPOINT_URL = env("S3_ENDPOINT_URL", "http://minio:9000")
-AWS_ACCESS_KEY_ID = env("S3_ACCESS_KEY", "minioadmin")
-AWS_SECRET_ACCESS_KEY = env("S3_SECRET_KEY", "minioadmin")
-AWS_S3_REGION_NAME = env("S3_REGION", "us-east-1")
-AWS_S3_USE_SSL = env_bool("S3_USE_SSL", False)
-AWS_S3_ADDRESSING_STYLE = "path"  # MinIO requires path-style addressing
-
-STORAGES = {
-    "default": {
-        "BACKEND": "storages.backends.s3.S3Storage",
-        "OPTIONS": {
-            "bucket_name": AWS_STORAGE_BUCKET_NAME,
-            "endpoint_url": AWS_S3_ENDPOINT_URL,
-            "access_key": AWS_ACCESS_KEY_ID,
-            "secret_key": AWS_SECRET_ACCESS_KEY,
-            "region_name": AWS_S3_REGION_NAME,
-            "addressing_style": AWS_S3_ADDRESSING_STYLE,
-            "url_protocol": "http:" if not AWS_S3_USE_SSL else "https:",
-        },
-    },
-    "staticfiles": {
-        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
-    },
-}
 
 # ---------------------------------------------------------------------------
 # Password validation / i18n / static

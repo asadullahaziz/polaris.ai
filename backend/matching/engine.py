@@ -513,9 +513,7 @@ def _relationships(seller_id, user_ids) -> set[int]:
         return set()
     from chat.models import ChatMember
 
-    seller_chat_ids = ChatMember.objects.filter(user_id=seller_id).values_list(
-        "chat_id", flat=True
-    )
+    seller_chat_ids = ChatMember.objects.filter(user_id=seller_id).values_list("chat_id", flat=True)
     if not seller_chat_ids:
         return set()
     return set(
