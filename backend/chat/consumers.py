@@ -135,7 +135,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(
             self.group_name, {"type": "chat.message", "data": payload}
         )
-        # Arm the counterparty's away-responder (fires only if they're away — §5/§9a; P4).
+        # Arm the counterparty's away-responder (fires only if they're away).
         try:
             await inngest_client.send(
                 inngest.Event(

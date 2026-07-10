@@ -57,7 +57,14 @@ async def _tick(seller_id: int, payload: dict) -> None:
 )
 async def outreach_fanout(ctx: inngest.Context) -> dict:
     campaign_id = ctx.event.data["campaign_id"]
-    info = await sync_to_async(service.campaign_dispatch_info)(campaign_id)
+    # Snapshot the dispatch info ONCE, as a durable step. `buyer_ids` only includes
+    # still-pending recipients, so recomputing it on an Inngest replay (every request
+    # after a completed step re-runs this function body) would drop each buyer the
+    # moment their send step flipped them to 'sent' — the loop below would never
+    # replay their iteration, silently skipping the chat/inbound arm + ticks.
+    info = await ctx.step.run(
+        "dispatch-info", sync_to_async(service.campaign_dispatch_info), campaign_id
+    )
     if info is None or info["status"] != "sending":
         return {"skipped": True, "reason": "campaign not in sending state"}
 
@@ -78,21 +85,21 @@ async def outreach_fanout(ctx: inngest.Context) -> dict:
         if res.get("status") == "sent":
             sent += 1
             # Every recipient is a registered user → arm the presence-gated away-responder
-            # (Graph 2): the opener is an inbound to their side. Best-effort; a duplicate
-            # emit is idempotent (the away-responder's own dedup_key caps one reply).
+            # (Graph 2): the opener is an inbound to their side. A durable step, not a raw
+            # client.send — raw sends between steps re-fire on every replay (one duplicate
+            # away-agent turn per replay), and are skipped entirely if their loop iteration
+            # never replays.
             if res.get("chat_id") and res.get("opener_message_id"):
-                try:
-                    await inngest_client.send(
-                        inngest.Event(
-                            name="chat/inbound",
-                            data={
-                                "chat_id": res["chat_id"],
-                                "inbound_message_id": res["opener_message_id"],
-                            },
-                        )
-                    )
-                except Exception as exc:  # noqa: BLE001 - never break the fan-out on this
-                    log.warning("chat/inbound emit failed for buyer %s: %s", uid, exc)
+                await ctx.step.send_event(
+                    f"arm-u{uid}",
+                    inngest.Event(
+                        name="chat/inbound",
+                        data={
+                            "chat_id": res["chat_id"],
+                            "inbound_message_id": res["opener_message_id"],
+                        },
+                    ),
+                )
         elif res.get("status") in ("skipped", "already_sent"):
             skipped += 1
 
