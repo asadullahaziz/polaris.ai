@@ -271,6 +271,16 @@ RESPONDER_GRACE_SECONDS = int(env("RESPONDER_GRACE_SECONDS", "45") or 45)
 # ---------------------------------------------------------------------------
 COPILOT_CONFIRM_TTL_SECONDS = int(env("COPILOT_CONFIRM_TTL_SECONDS", "86400") or 86400)
 
+# ---------------------------------------------------------------------------
+# Copilot transcript context policy (2026-07-10). Tool calls/results are persisted as
+# transcript blocks and re-fed to the model, so it remembers what tools returned in
+# past turns. The last N user turns rehydrate at FULL fidelity (tool traffic included);
+# older turns collapse to text-only so long chats never degrade in latency or cost.
+# Individual tool results are size-capped on rehydrate (they can be whole comp tables).
+# ---------------------------------------------------------------------------
+COPILOT_FULL_FIDELITY_TURNS = int(env("COPILOT_FULL_FIDELITY_TURNS", "5") or 5)
+COPILOT_TOOL_RESULT_MAX_CHARS = int(env("COPILOT_TOOL_RESULT_MAX_CHARS", "4000") or 4000)
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

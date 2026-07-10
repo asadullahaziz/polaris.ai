@@ -11,7 +11,7 @@ from typing import TypedDict
 
 import pytest
 from django.contrib.auth import get_user_model
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -64,6 +64,152 @@ def test_ai_chat_ownership_scoping(user, other):
     chat_id = dal._create_ai_chat(user.id)
     assert dal._owns_ai_chat(other.id, chat_id) is False
     assert dal._list_ai_chats(other.id) == []
+
+
+# ============ block-structured transcript: tool memory (2026-07-10) ============
+def _one_tool_turn(chat_id: int, i: int) -> int | None:
+    """One user turn whose reply used a tool: user row + [assistant(call) → tool result
+    → assistant text] persisted as blocks. Returns save_turn_blocks' last-text id."""
+    dal._save_ai_message(chat_id, role="user", content=f"q{i}")
+    return dal._save_turn_blocks(
+        chat_id,
+        [
+            AIMessage(
+                content=f"checking {i}",
+                tool_calls=[
+                    {"name": "get_comps", "args": {"listing_id": i}, "id": f"call_{i}", "type": "tool_call"}
+                ],
+            ),
+            ToolMessage(content=f"comps for {i}", tool_call_id=f"call_{i}", name="get_comps"),
+            AIMessage(content=f"answer {i}"),
+        ],
+    )
+
+
+@pytest.mark.django_db
+def test_transcript_rehydrates_tool_blocks(user):
+    """The model REMEMBERS tool traffic: assistant tool_calls + tool results round-trip
+    through `ai_message` into real LangChain blocks, and the friendly label is stamped
+    on the persisted row (what the UI chip renders on reopen)."""
+    from ai.models import AiMessage
+
+    chat_id = dal._create_ai_chat(user.id)
+    last_id = _one_tool_turn(chat_id, 1)
+
+    history = dal._load_transcript(chat_id)
+    assert [type(m).__name__ for m in history] == [
+        "HumanMessage",
+        "AIMessage",
+        "ToolMessage",
+        "AIMessage",
+    ]
+    ai_call = history[1]
+    assert ai_call.tool_calls[0]["name"] == "get_comps"
+    assert ai_call.tool_calls[0]["args"] == {"listing_id": 1}
+    assert history[2].tool_call_id == "call_1" and history[2].content == "comps for 1"
+    assert history[3].content == "answer 1"
+
+    # save_turn_blocks reported the last TEXT row (what copilot.done points at).
+    assert AiMessage.objects.get(id=last_id).content == "answer 1"
+    # The persisted tool row carries the human label for the UI chip.
+    tool_row = AiMessage.objects.filter(ai_chat_id=chat_id, role="tool").get()
+    assert tool_row.tool_calls["kind"] == "tool_result"
+    assert tool_row.tool_calls["label"] == "Running comps…"
+
+
+@pytest.mark.django_db
+def test_transcript_collapses_old_turns_to_text_only(user, settings):
+    """Context policy: only the last COPILOT_FULL_FIDELITY_TURNS user turns keep tool
+    traffic; older turns collapse to their text (no tool_calls, no tool rows) so long
+    chats never grow unboundedly in tokens."""
+    settings.COPILOT_FULL_FIDELITY_TURNS = 5
+    chat_id = dal._create_ai_chat(user.id)
+    for i in range(1, 8):  # 7 turns; turns 1-2 fall outside the window
+        _one_tool_turn(chat_id, i)
+
+    history = dal._load_transcript(chat_id)
+    tool_msgs = [m for m in history if isinstance(m, ToolMessage)]
+    assert {m.content for m in tool_msgs} == {f"comps for {i}" for i in range(3, 8)}
+    # Collapsed turns keep their prose…
+    texts = [m.content for m in history if isinstance(m, AIMessage)]
+    assert "answer 1" in texts and "checking 1" in texts
+    # …but none of their assistant messages carry tool_calls anymore.
+    old_ai = [m for m in history if isinstance(m, AIMessage) and m.content == "checking 1"]
+    assert old_ai and not old_ai[0].tool_calls
+
+
+@pytest.mark.django_db
+def test_transcript_truncates_oversized_tool_results(user, settings):
+    settings.COPILOT_TOOL_RESULT_MAX_CHARS = 100
+    chat_id = dal._create_ai_chat(user.id)
+    dal._save_ai_message(chat_id, role="user", content="q")
+    dal._save_turn_blocks(
+        chat_id,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "get_comps", "args": {}, "id": "c1", "type": "tool_call"}],
+            ),
+            ToolMessage(content="x" * 5000, tool_call_id="c1", name="get_comps"),
+            AIMessage(content="done"),
+        ],
+    )
+    tool_msg = next(m for m in dal._load_transcript(chat_id) if isinstance(m, ToolMessage))
+    assert tool_msg.content.endswith("…[truncated]")
+    assert len(tool_msg.content) < 200
+
+
+@pytest.mark.django_db
+def test_transcript_drops_broken_tool_pairs(user):
+    """Defensive pairing: a dangling assistant tool_call (e.g. a confirm that expired
+    before the tool ever returned) is stripped — its prose survives — and an orphan
+    tool result is dropped. Either half alone would 400 the next model call."""
+    from ai.models import AiMessage
+
+    chat_id = dal._create_ai_chat(user.id)
+    dal._save_ai_message(chat_id, role="user", content="q")
+    # A call whose result never landed (parked confirm, expired).
+    dal._save_turn_blocks(
+        chat_id,
+        [
+            AIMessage(
+                content="on it",
+                tool_calls=[{"name": "create_listing", "args": {}, "id": "call_x", "type": "tool_call"}],
+            )
+        ],
+    )
+    # And an orphan result whose call row is gone.
+    AiMessage.objects.create(
+        ai_chat_id=chat_id,
+        role="tool",
+        content="orphan",
+        tool_calls={"kind": "tool_result", "tool_call_id": "call_gone", "name": "get_comps", "label": "x"},
+    )
+
+    history = dal._load_transcript(chat_id)
+    assert not any(isinstance(m, ToolMessage) for m in history)
+    survivor = [m for m in history if isinstance(m, AIMessage)]
+    assert [m.content for m in survivor] == ["on it"]
+    assert not survivor[0].tool_calls
+
+
+def test_tool_labels_cover_and_humanize():
+    from polaris_agent.tools.labels import tool_label
+
+    assert tool_label("rank_buyers_for_listings") == "Ranking buyers…"
+    assert tool_label("some_new_tool") == "Some new tool…"  # never leaks snake_case
+    assert tool_label(None) == "Working…"
+
+
+def test_gpt5_reasoning_models_skip_explicit_temperature():
+    """GPT-5-family models reject a non-default temperature — get_model must not send
+    one (a 400 on the first copilot turn otherwise); other models still get it."""
+    from polaris_agent.models import _accepts_temperature
+
+    assert _accepts_temperature("openai/gpt-5.6-terra") is False
+    assert _accepts_temperature("openai/gpt-5.6-sol") is False
+    assert _accepts_temperature("openai/gpt-5.4-mini") is False
+    assert _accepts_temperature("anthropic/claude-sonnet-4.6") is True
 
 
 # ============================ agent memory =====================================

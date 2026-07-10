@@ -8,13 +8,14 @@ settings change.
 
 Roles (CLAUDE.md tech stack):
   * workhorse  — copilot + away-responder
-  * escalation — hard cases
-  * bulk       — ranking/classification + Haiku auto-titling at volume
+  * escalation — hard cases (unused today; kept as a wired step-up path)
+  * bulk       — ranking/classification + auto-titling at volume
 
-NOTE (objective-partner flag): the docs name the workhorse "Sonnet 4.6". The
-concrete model IDs are intentionally env-driven (not hard-coded) and must be
-confirmed against the current provider lineup when #5 is resolved — do not treat
-the defaults below as authoritative.
+Defaults: the Anthropic lineup via OpenRouter (Sonnet 4.6 / Opus 4.8 / Haiku 4.5).
+A GPT-5.6 switch was tried 2026-07-10 and REVERTED 2026-07-11: in live product flows
+Terra abandoned tool chains after one failed lookup (instead of falling back to
+search_properties / list_my_listings) and skipped pre-tool narration. GPT models stay
+usable via the env vars; `_accepts_temperature` keeps that path safe.
 """
 
 from __future__ import annotations
@@ -30,6 +31,12 @@ _ROLE_DEFAULTS: dict[str, tuple[str, str]] = {
     "escalation": ("POLARIS_MODEL_ESCALATION", "anthropic/claude-opus-4.8"),
     "bulk": ("POLARIS_MODEL_BULK", "anthropic/claude-haiku-4.5"),
 }
+
+
+def _accepts_temperature(model_id: str) -> bool:
+    """GPT-5-family reasoning models reject an explicit temperature (only the default
+    is allowed — sending one is a 400). Everything else accepts it."""
+    return not model_id.split("/", 1)[-1].startswith("gpt-5")
 
 
 def model_id_for(role: str) -> str:
@@ -57,12 +64,14 @@ def get_model(role: str = "workhorse", *, temperature: float = 0.0):
             raise RuntimeError(
                 "LLM_PROVIDER=openrouter requires langchain-openai to be installed."
             ) from exc
-        return ChatOpenAI(
-            model=model_id,
-            temperature=temperature,
-            base_url="https://openrouter.ai/api/v1",
-            api_key=settings.OPENROUTER_API_KEY,
-        )
+        kwargs: dict = {
+            "model": model_id,
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": settings.OPENROUTER_API_KEY,
+        }
+        if _accepts_temperature(model_id):
+            kwargs["temperature"] = temperature
+        return ChatOpenAI(**kwargs)
 
     if provider == "anthropic":
         try:

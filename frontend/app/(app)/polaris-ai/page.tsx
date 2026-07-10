@@ -33,10 +33,18 @@ import { useMe } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
 // One local message list per open session: REST transcript rows + live-turn artifacts
-// (streamed reply, confirm cards). Confirm cards are session-local (the transcript
-// records the tool call itself on rehydrate).
+// (streamed segments, tool-activity chips, confirm cards). On `copilot.done` the list
+// is replaced by the canonical transcript (block rows persisted by the backend).
 type LocalMsg =
   | { type: "chat"; id: number | string; role: string; content: string }
+  | {
+      type: "tool";
+      id: number | string;
+      name: string;
+      label: string;
+      status: "running" | "done";
+      result?: string;
+    }
   | {
       type: "confirm";
       id: string;
@@ -98,8 +106,45 @@ export default function PolarisAiPage() {
           setActiveId(d.conversation_id);
           qc.invalidateQueries({ queryKey: ["ai-chats"] });
         } else if (msg.type === "copilot.token") {
+          // Drop a leading segment separator — a fresh bubble never opens with blank lines.
+          if (!bufRef.current && !String(d.token).trim()) return;
           bufRef.current += d.token;
           setStreaming(bufRef.current);
+        } else if (msg.type === "copilot.tool") {
+          if (d.status === "start") {
+            // A tool is starting: flush the streamed segment into its own bubble, then
+            // show the activity chip ("Ranking buyers…") beneath it.
+            if (bufRef.current) {
+              const body = bufRef.current;
+              bufRef.current = "";
+              setStreaming("");
+              setMessages((m) => [
+                ...m,
+                { type: "chat", id: `seg-${Date.now()}-${m.length}`, role: "assistant", content: body },
+              ]);
+            }
+            setMessages((m) => [
+              ...m,
+              {
+                type: "tool",
+                id: `tool-${Date.now()}-${m.length}`,
+                name: String(d.name || ""),
+                label: String(d.label || "Working…"),
+                status: "running",
+              },
+            ]);
+          } else {
+            // Tool finished — settle the most recent matching running chip.
+            setMessages((m) => {
+              let target = -1;
+              m.forEach((x, i) => {
+                if (x.type === "tool" && x.status === "running" && (!d.name || x.name === d.name))
+                  target = i;
+              });
+              if (target < 0) return m;
+              return m.map((x, i) => (i === target ? { ...x, status: "done" as const } : x));
+            });
+          }
         } else if (msg.type === "copilot.confirm") {
           // Flush any streamed preamble, then park the turn on the confirm card.
           if (bufRef.current) {
@@ -122,13 +167,18 @@ export default function PolarisAiPage() {
           setStreaming("");
           setBusy(false);
           setPendingConfirm(false);
-          if (body)
+          qc.invalidateQueries({ queryKey: ["ai-chats"] });
+          qc.invalidateQueries({ queryKey: ["campaigns"] });
+          // Replace the live-turn artifacts with the canonical block transcript
+          // (segments + tool chips with results) — unless the user navigated away.
+          if (d.conversation_id != null && d.conversation_id === activeIdRef.current) {
+            void openChat(d.conversation_id);
+          } else if (body) {
             setMessages((m) => [
               ...m,
               { type: "chat", id: d.message_id ?? `done-${Date.now()}`, role: "assistant", content: body },
             ]);
-          qc.invalidateQueries({ queryKey: ["ai-chats"] });
-          qc.invalidateQueries({ queryKey: ["campaigns"] });
+          }
         } else if (msg.type === "copilot.error") {
           bufRef.current = "";
           setStreaming("");
@@ -175,20 +225,38 @@ export default function PolarisAiPage() {
     setStreaming("");
     setPendingConfirm(false);
     const chat = await getAiChat(id);
-    const msgs: LocalMsg[] = chat.messages.map((m) => {
+    const msgs: LocalMsg[] = chat.messages.flatMap((m): LocalMsg[] => {
+      const tc = m.tool_calls;
       // A resolved/expired confirm is persisted as a role='tool' row carrying the card
       // payload + resolution — re-render it as a greyed, non-interactive card in place.
-      const tc = m.tool_calls;
       if (m.role === "tool" && tc && tc.kind === "confirm_write") {
         const { resolution, ...payload } = tc;
-        return {
-          type: "confirm",
-          id: `outcome-${m.id}`,
-          payload: payload as unknown as ConfirmPayload,
-          resolution: resolution as "approved" | "declined" | "expired",
-        };
+        return [
+          {
+            type: "confirm",
+            id: `outcome-${m.id}`,
+            payload: payload as unknown as ConfirmPayload,
+            resolution: resolution as "approved" | "declined" | "expired",
+          },
+        ];
       }
-      return { type: "chat", id: m.id, role: m.role, content: m.content };
+      // A persisted tool result → the same activity chip the live turn showed, with
+      // the raw result available on demand.
+      if (m.role === "tool" && tc && tc.kind === "tool_result") {
+        return [
+          {
+            type: "tool",
+            id: `chip-${m.id}`,
+            name: String(tc.name || ""),
+            label: String(tc.label || "Tool"),
+            status: "done",
+            result: m.content,
+          },
+        ];
+      }
+      // Call-only assistant rows carry no text (their chips follow as tool rows).
+      if (m.role === "assistant" && !m.content) return [];
+      return [{ type: "chat", id: m.id, role: m.role, content: m.content }];
     });
     // Restore a still-pending write-confirm (survives nav/reload) so it's actionable again.
     if (chat.pending_confirm) {
@@ -327,16 +395,21 @@ export default function PolarisAiPage() {
                   resolution={m.resolution}
                   onRespond={(approved) => respondConfirm(m.id, approved)}
                 />
+              ) : m.type === "tool" ? (
+                <ToolChip key={m.id} label={m.label} status={m.status} result={m.result} />
               ) : (
                 <Bubble key={m.id} role={m.role} body={m.content} />
               ),
             )}
             {streaming && <Bubble role="assistant" body={streaming} streaming />}
-            {busy && !streaming && !pendingConfirm && (
-              <p className="my-3 flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Polaris is thinking…
-              </p>
-            )}
+            {busy &&
+              !streaming &&
+              !pendingConfirm &&
+              !messages.some((m) => m.type === "tool" && m.status === "running") && (
+                <p className="my-3 flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" /> Polaris is thinking…
+                </p>
+              )}
             {tick && (
               <p className="my-3 flex items-center justify-center gap-1.5 text-center text-xs text-primary">
                 <Megaphone className="size-3.5" /> {tick}
@@ -404,7 +477,45 @@ function Bubble({ role, body, streaming }: { role: string; body: string; streami
   );
 }
 
-// Transcript tool rows (rehydrated sessions) — collapsed, raw payload on demand.
+// Tool-activity chip: "Ranking buyers…" with a spinner while running; once done, the
+// raw result opens on demand. The label comes from the backend (live event + persisted
+// row), so live and rehydrated turns render identically.
+function ToolChip({
+  label,
+  status,
+  result,
+}: {
+  label: string;
+  status: "running" | "done";
+  result?: string;
+}) {
+  const settled = label.replace(/…$/, "");
+  if (status === "running" || !result) {
+    return (
+      <div className="my-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+        {status === "running" ? (
+          <Loader2 className="size-3 animate-spin" />
+        ) : (
+          <Wrench className="size-3" />
+        )}
+        {status === "running" ? label : settled}
+      </div>
+    );
+  }
+  return (
+    <Collapsible className="my-2">
+      <CollapsibleTrigger className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent">
+        <Wrench className="size-3" /> {settled}
+        <ChevronRight className="size-3 transition-transform [[data-state=open]>&]:rotate-90" />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-muted p-2 text-xs">{result}</pre>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+// Transcript tool rows (legacy shape) — collapsed, raw payload on demand.
 function ToolResult({ body }: { body: string }) {
   return (
     <Collapsible className="my-2">

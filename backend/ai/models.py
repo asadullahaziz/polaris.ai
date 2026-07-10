@@ -74,14 +74,19 @@ class AiChat(models.Model):
 
 
 class AiMessage(models.Model):
-    """One turn of the copilot transcript — the SYSTEM OF RECORD (architecture §9b):
-    graphs rehydrate from here, never from the LangGraph checkpoint. `tool_calls`
-    reserves room for a tool-trace audit (unused text-only path in P2)."""
+    """One BLOCK of the copilot transcript — the SYSTEM OF RECORD (architecture §9b):
+    graphs rehydrate from here, never from the LangGraph checkpoint. Block-structured
+    since 2026-07-10: each assistant LLM call is its own row (its tool calls in
+    `tool_calls` as a list), each tool result a role='tool' row (`tool_calls` = a dict
+    {kind:'tool_result', tool_call_id, name, label} with the result as `content`) — so
+    the model remembers past tool traffic and the UI renders activity chips on reopen.
+    Resolved confirm cards also live as role='tool' rows (dict kind='confirm_write'),
+    UI-only, never re-fed to the model."""
 
     ai_chat = models.ForeignKey(AiChat, on_delete=models.CASCADE, related_name="messages")
     role = models.TextField(choices=AI_MESSAGE_ROLES)  # user | assistant | system | tool
     content = models.TextField(blank=True, default="")
-    tool_calls = models.JSONField(default=list, blank=True)  # reserved (P2 persists text only)
+    tool_calls = models.JSONField(default=list, blank=True)  # list (assistant) | dict (tool)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

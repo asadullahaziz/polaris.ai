@@ -129,8 +129,13 @@ Key design docs (keep these authoritative — update them when a decision change
 - **Frontend:** Next.js
 - **Backend:** Python · Django REST Framework (DRF)
 - **Database:** PostgreSQL **+ PostGIS** (buy-box geography + behavioral "bought-in-area" matching)
-- **AI/LLM:** via **OpenRouter** — Sonnet 4.6 (workhorse: copilot + auto-responder),
-  Opus 4.8 (escalation), Haiku 4.5 (bulk ranking/classification)
+- **AI/LLM:** via **OpenRouter** — Sonnet 4.6 (workhorse: copilot + away-responder),
+  Opus 4.8 (escalation; no call sites today, kept wired), Haiku 4.5 (bulk
+  screen/triage/auto-titling). Defaults in `polaris_agent/models.py`, env-overridable
+  (`POLARIS_MODEL_*`). ⚠️ A GPT-5.6 switch was tried 2026-07-10 and **reverted
+  2026-07-11** — Terra abandoned tool chains after a failed lookup and skipped pre-tool
+  narration in live flows. GPT models remain usable via env; `get_model` omits
+  temperature for GPT-5-family IDs (they reject it).
 - **Agent framework:** **LangGraph** (copilot · auto-responder turn · outreach fan-out);
   checkpointer = Postgres (`langgraph-checkpoint-postgres`)
 - **Durable execution / async orchestration:** **Inngest** (events, retries, fan-out, long human waits)
@@ -147,10 +152,11 @@ removed 2026-07-08; `ListingMedia` stores URLs), schema authored as **Django mod
 migrations** (canonical, matched 1:1 to the DDL), Inngest **kept**. ASGI server = **uvicorn**; SPA cross-origin handled by
 **CORS + credentials** (SameSite=Lax works same-site on localhost).
 
-**Still not decided** (see `.claude/context/PRODUCT.md` §6/§8): #5 provider (OpenRouter
-vs native Anthropic — **deferred**; model wiring is provider-agnostic behind
-`polaris_agent/models.py`), search infra, hosting/CI, payments. **Do not silently pick
-one** — propose options and confirm before introducing a major dependency or service.
+**Still not decided** (see `.claude/context/PRODUCT.md` §6/§8): search infra, hosting/CI,
+payments. **Do not silently pick one** — propose options and confirm before introducing a
+major dependency or service. (#5 provider: transport = **OpenRouter**, models = the
+Anthropic lineup — a GPT-5.6 trial was reverted 2026-07-11; the wiring stays
+provider-agnostic behind `polaris_agent/models.py`.)
 
 ## How to work in this repo
 

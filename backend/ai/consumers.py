@@ -6,19 +6,22 @@ One socket per session; identity from AuthMiddlewareStack (session cookie →
 scope["user"]). The ReAct copilot agent is built once per connection (bound to the
 user + their global agent_instructions). Each turn:
   1. persist the human message (system of record: `ai_message`),
-  2. rehydrate the transcript from `ai_message` (architecture §9b),
-  3. stream the assistant's tokens (`copilot.token`) — tool-call / structured-output
-     chunks carry empty content and are naturally skipped,
+  2. rehydrate the transcript from `ai_message` (architecture §9b) — block-structured
+     since 2026-07-10, so past tool calls/results ARE model context (windowed in dal),
+  3. stream the assistant's tokens (`copilot.token`) + tool activity (`copilot.tool`
+     start/end with a human label); a new LLM call within the turn streams a "\n\n"
+     separator first so segments never glue together,
   4. if a WRITE tool raises a confirm interrupt, PAUSE: emit `copilot.confirm` and wait
      for the client's `copilot.confirm_response`, then resume with `Command(resume=…)`;
-  5. once the turn completes with no pending interrupt, persist the assistant message and
-     emit `copilot.done` (with an auto-title).
+  5. once the turn completes with no pending interrupt, persist the turn's BLOCKS
+     (assistant segments + tool results, from the graph state) and emit `copilot.done`
+     (with an auto-title). The flattened token buffer is only the fallback persist.
 
 WS envelope: {type, conversation_id?, data}.
   C→S  copilot.send             {conversation_id?|null, body}
   C→S  copilot.confirm_response {approved: bool}
-  S→C  copilot.ready | copilot.created | copilot.token | copilot.confirm |
-       copilot.done | copilot.error
+  S→C  copilot.ready | copilot.created | copilot.token | copilot.tool |
+       copilot.confirm | copilot.done | copilot.error
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from polaris_agent import dal
 from polaris_agent.checkpointer import get_checkpointer
 from polaris_agent.graphs.copilot import build_copilot_agent
 from polaris_agent.models import get_model
+from polaris_agent.tools.labels import tool_label
 
 log = logging.getLogger(__name__)
 
@@ -136,17 +140,54 @@ class CopilotConsumer(AsyncWebsocketConsumer):
 
     # ---- The turn (with a durable pause on write confirmations) -------------------
     async def _pump(self, inp, cfg: dict, buf: list[str], conv_id: int):
-        """Stream one (re)entry of the agent. Forwards NL tokens; returns the tuple of
-        pending Interrupts if the turn paused for a write confirmation, else None."""
+        """Stream one (re)entry of the agent. Forwards NL tokens + tool activity
+        (`copilot.tool` start/end with a human label); a new LLM call after the first
+        streams a "\\n\\n" separator so segments never glue ("sending.Got their IDs").
+        Returns the tuple of pending Interrupts if the turn paused for a write
+        confirmation, else None."""
+        unset = object()  # distinguishes "no LLM call seen this pump" from an id of None
+        last_msg_id = unset
         async for mode, data in self.agent.astream(
             inp, config=cfg, stream_mode=["messages", "updates"]
         ):
             if mode == "messages":
                 chunk, _meta = data
-                if getattr(chunk, "type", "") != "AIMessageChunk":
+                ctype = getattr(chunk, "type", "")
+                if ctype == "tool":  # a ToolMessage landing = the tool finished
+                    await self._send(
+                        "copilot.tool",
+                        {
+                            "conversation_id": conv_id,
+                            "status": "end",
+                            "name": getattr(chunk, "name", None),
+                            "label": tool_label(getattr(chunk, "name", None)),
+                        },
+                    )
                     continue
+                if ctype != "AIMessageChunk":
+                    continue
+                for tc in getattr(chunk, "tool_call_chunks", None) or []:
+                    if tc.get("name"):  # first chunk of a call carries the name
+                        await self._send(
+                            "copilot.tool",
+                            {
+                                "conversation_id": conv_id,
+                                "status": "start",
+                                "name": tc["name"],
+                                "label": tool_label(tc["name"]),
+                            },
+                        )
                 text = chunk.content
                 if isinstance(text, str) and text:
+                    chunk_id = getattr(chunk, "id", None)
+                    # A new LLM call while text is already buffered (a later segment of
+                    # this turn, or the resume after a confirm pause) → separate it.
+                    if buf and (last_msg_id is unset or chunk_id != last_msg_id):
+                        buf.append("\n\n")
+                        await self._send(
+                            "copilot.token", {"conversation_id": conv_id, "token": "\n\n"}
+                        )
+                    last_msg_id = chunk_id
                     buf.append(text)
                     await self._send("copilot.token", {"conversation_id": conv_id, "token": text})
             elif mode == "updates":
@@ -177,9 +218,27 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         buf: list[str] = []
         interrupts = await self._pump({"messages": history}, cfg, buf, conv_id)
         if interrupts is not None:
-            await self._enter_pending(conv_id, cfg, buf, needs_title, body, interrupts)
+            await self._enter_pending(
+                conv_id, cfg, buf, needs_title, body, interrupts, len(history)
+            )
             return
-        await self._finalize(conv_id, buf, needs_title, body)
+        await self._finalize(conv_id, buf, needs_title, body, cfg, len(history))
+
+    async def _persist_blocks_upto_now(self, conv_id, cfg, persisted_len):
+        """Persist the graph-state messages beyond `persisted_len` as transcript block
+        rows. Returns (last_text_msg_id, new_persisted_len); (None, persisted_len)
+        unchanged if the state read fails or nothing new landed."""
+        try:
+            state = await self.agent.aget_state(cfg)
+            msgs = state.values.get("messages") or []
+            new = msgs[persisted_len:]
+            if not new:
+                return None, persisted_len
+            msg_id = await dal.save_turn_blocks(conv_id, new)
+            return msg_id, len(msgs)
+        except Exception:  # noqa: BLE001 - never lose the reply over the audit trail
+            log.exception("block persist failed")
+            return None, persisted_len
 
     async def _resume(self, approved: bool, conv_id=None) -> None:
         p = self._pending
@@ -218,18 +277,40 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         interrupts = await self._pump(command, p["cfg"], p["buf"], p["conv_id"])
         if interrupts is not None:
             await self._enter_pending(
-                p["conv_id"], p["cfg"], p["buf"], p["needs_title"], p["first_body"], interrupts
+                p["conv_id"],
+                p["cfg"],
+                p["buf"],
+                p["needs_title"],
+                p["first_body"],
+                interrupts,
+                p.get("persisted_len"),
             )
             return
-        await self._finalize(p["conv_id"], p["buf"], p["needs_title"], p["first_body"])
+        await self._finalize(
+            p["conv_id"],
+            p["buf"],
+            p["needs_title"],
+            p["first_body"],
+            p["cfg"],
+            p.get("persisted_len"),
+        )
 
-    async def _enter_pending(self, conv_id, cfg, buf, needs_title, first_body, interrupts) -> None:
+    async def _enter_pending(
+        self, conv_id, cfg, buf, needs_title, first_body, interrupts, persisted_len=None
+    ) -> None:
+        # Persist the blocks produced so far BEFORE parking, so the timeline stays in
+        # order (preamble → tool call → confirm card → …) and an expired confirm keeps
+        # its preamble. A dangling tool call (paused, no result yet) is fine — the
+        # transcript loader strips broken pairs on rehydrate.
+        if persisted_len is not None:
+            _, persisted_len = await self._persist_blocks_upto_now(conv_id, cfg, persisted_len)
         self._pending = {
             "conv_id": conv_id,
             "cfg": cfg,
             "buf": buf,
             "needs_title": needs_title,
             "first_body": first_body,
+            "persisted_len": persisted_len,
             "ids": [i.id for i in interrupts],
             "value": interrupts[0].value,  # the confirm-card render payload
             "created_at": timezone.now().isoformat(),  # TTL clock for lazy expiry
@@ -241,9 +322,22 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             "copilot.confirm", {"conversation_id": conv_id, "value": interrupts[0].value}
         )
 
-    async def _finalize(self, conv_id, buf, needs_title, first_body) -> None:
-        answer = "".join(buf).strip() or "(no response)"
-        msg_id = await dal.save_ai_message(conv_id, role="assistant", content=answer)
+    async def _finalize(
+        self, conv_id, buf, needs_title, first_body, cfg=None, persisted_len=None
+    ) -> None:
+        # Primary: persist the turn's remaining BLOCKS (assistant segments + tool
+        # results) from the graph state — this is what gives the model tool memory on
+        # later turns and the UI its activity chips on rehydrate. Fallback: the
+        # flattened token buffer (a pre-deploy parked confirm with no persisted_len, or
+        # a state read hiccup with nothing block-persisted yet).
+        msg_id = None
+        blocks_landed = False
+        if cfg is not None and persisted_len is not None:
+            msg_id, new_len = await self._persist_blocks_upto_now(conv_id, cfg, persisted_len)
+            blocks_landed = new_len > persisted_len
+        if msg_id is None and not blocks_landed:
+            answer = "".join(buf).strip() or "(no response)"
+            msg_id = await dal.save_ai_message(conv_id, role="assistant", content=answer)
         await dal.clear_pending_confirm(conv_id)  # turn resolved (approved or declined)
         title = await self._title(conv_id, first_body) if needs_title else None
         await self._send(

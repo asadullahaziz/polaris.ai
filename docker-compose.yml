@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-polaris}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polaris}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pg-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -81,4 +81,4 @@ services:
     command: ["npm", "run", "dev"]
 
 volumes:
-  pgdata:
+  pg-data:

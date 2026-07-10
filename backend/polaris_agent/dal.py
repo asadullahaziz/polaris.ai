@@ -34,7 +34,7 @@ from datetime import UTC
 from decimal import Decimal, InvalidOperation
 
 from asgiref.sync import sync_to_async
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 log = logging.getLogger(__name__)
 
@@ -84,24 +84,116 @@ def _list_ai_chats(owner_id: int) -> list[dict]:
     ]
 
 
+def _text_content(content) -> str:
+    """Coerce a LangChain message `content` (str or list-of-parts) to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, str):
+                parts.append(p)
+            elif isinstance(p, dict) and p.get("type") == "text":
+                parts.append(p.get("text") or "")
+        return "".join(parts)
+    return str(content or "")
+
+
+def _repair_tool_pairing(msgs: list) -> list:
+    """Drop broken tool pairs defensively: an assistant `tool_calls` entry without its
+    matching tool result (or an orphan tool result) is an API 400 on the next turn.
+    Keeps only fully-paired calls, in call order; a call-only assistant message with no
+    text left disappears entirely."""
+    out: list = []
+    i = 0
+    while i < len(msgs):
+        m = msgs[i]
+        if isinstance(m, AIMessage) and m.tool_calls:
+            j = i + 1
+            results: dict[str, ToolMessage] = {}
+            while j < len(msgs) and isinstance(msgs[j], ToolMessage):
+                results[msgs[j].tool_call_id] = msgs[j]
+                j += 1
+            kept = [c for c in m.tool_calls if c.get("id") in results]
+            if kept:
+                out.append(AIMessage(content=m.content, tool_calls=kept))
+                out.extend(results[c["id"]] for c in kept)
+            elif _text_content(m.content):
+                out.append(AIMessage(content=m.content))
+            i = j
+        elif isinstance(m, ToolMessage):
+            i += 1  # orphan result (its call was lost) — never re-feed it
+        else:
+            out.append(m)
+            i += 1
+    return out
+
+
 def _load_transcript(ai_chat_id: int) -> list:
-    """Rehydrate the LangChain message list from `ai_message` (architecture §9b)."""
+    """Rehydrate the LangChain message list from `ai_message` (architecture §9b).
+
+    Block-structured (2026-07-10): assistant rows carry their `tool_calls` and
+    role='tool' rows the results, so the model REMEMBERS what tools returned in past
+    turns (ids, figures, rankings) instead of only its own prose. Context policy
+    (settings): the last COPILOT_FULL_FIDELITY_TURNS user turns rehydrate at full
+    fidelity; older turns collapse to text-only. Oversized tool results truncate.
+    Confirm-card rows (kind='confirm_write') stay UI-only — never re-fed."""
+    from django.conf import settings
+
     from ai.models import AiMessage
 
-    out = []
-    for m in (
+    rows = list(
         AiMessage.objects.filter(ai_chat_id=ai_chat_id)
-        .order_by("created_at")
-        .values("role", "content")
-    ):
-        if m["role"] == "user":
+        .order_by("created_at", "id")
+        .values("role", "content", "tool_calls")
+    )
+    user_idxs = [i for i, r in enumerate(rows) if r["role"] == "user"]
+    n_full = settings.COPILOT_FULL_FIDELITY_TURNS
+    full_from = user_idxs[-n_full] if len(user_idxs) > n_full else 0
+    max_chars = settings.COPILOT_TOOL_RESULT_MAX_CHARS
+
+    out = []
+    for i, m in enumerate(rows):
+        role, tc = m["role"], m["tool_calls"]
+        if role == "user":
             out.append(HumanMessage(content=m["content"]))
-        elif m["role"] == "assistant":
-            out.append(AIMessage(content=m["content"]))
-        elif m["role"] == "system":
+        elif role == "system":
             out.append(SystemMessage(content=m["content"]))
-        # 'tool' rows are reserved (not persisted in P2) — skip if present.
-    return out
+        elif role == "assistant":
+            calls = tc if isinstance(tc, list) else []
+            if i >= full_from and calls:
+                out.append(
+                    AIMessage(
+                        content=m["content"],
+                        tool_calls=[
+                            {
+                                "id": c.get("id") or "",
+                                "name": c.get("name") or "",
+                                "args": c.get("args") or {},
+                                "type": "tool_call",
+                            }
+                            for c in calls
+                        ],
+                    )
+                )
+            elif m["content"]:
+                out.append(AIMessage(content=m["content"]))
+        elif role == "tool":
+            if not isinstance(tc, dict) or tc.get("kind") != "tool_result":
+                continue  # confirm cards + legacy rows are UI-only
+            if i < full_from:
+                continue  # collapsed window: tool traffic dropped
+            body = m["content"]
+            if len(body) > max_chars:
+                body = body[:max_chars] + "\n…[truncated]"
+            out.append(
+                ToolMessage(
+                    content=body,
+                    tool_call_id=tc.get("tool_call_id") or "",
+                    name=tc.get("name") or None,
+                )
+            )
+    return _repair_tool_pairing(out)
 
 
 def _save_ai_message(ai_chat_id: int, *, role: str, content: str) -> int:
@@ -113,6 +205,52 @@ def _save_ai_message(ai_chat_id: int, *, role: str, content: str) -> int:
     # Bump the chat so the sidebar orders most-recent-first.
     AiChat.objects.filter(id=ai_chat_id).update(updated_at=timezone.now())
     return msg.id
+
+
+def _save_turn_blocks(ai_chat_id: int, messages: list) -> int | None:
+    """Persist one completed copilot turn as BLOCK rows (2026-07-10): each assistant
+    LLM call is its own row (its `tool_calls` in the JSON column), each tool result a
+    role='tool' row (`{kind: 'tool_result', tool_call_id, name, label}` + the result as
+    content). Atomic — a partially-persisted turn would rehydrate as a broken tool pair.
+    Returns the id of the last assistant row that carries text (what `copilot.done`
+    reports), or None if the turn produced no assistant text."""
+    from django.db import transaction
+    from django.utils import timezone
+
+    from ai.models import AiChat, AiMessage
+
+    from polaris_agent.tools.labels import tool_label
+
+    last_text_id: int | None = None
+    with transaction.atomic():
+        for m in messages:
+            if isinstance(m, AIMessage):
+                text = _text_content(m.content)
+                calls = [
+                    {"id": c.get("id") or "", "name": c.get("name") or "", "args": c.get("args") or {}}
+                    for c in (m.tool_calls or [])
+                ]
+                if not text and not calls:
+                    continue
+                row = AiMessage.objects.create(
+                    ai_chat_id=ai_chat_id, role="assistant", content=text, tool_calls=calls
+                )
+                if text:
+                    last_text_id = row.id
+            elif isinstance(m, ToolMessage):
+                AiMessage.objects.create(
+                    ai_chat_id=ai_chat_id,
+                    role="tool",
+                    content=_text_content(m.content),
+                    tool_calls={
+                        "kind": "tool_result",
+                        "tool_call_id": m.tool_call_id or "",
+                        "name": m.name or "",
+                        "label": tool_label(m.name),
+                    },
+                )
+        AiChat.objects.filter(id=ai_chat_id).update(updated_at=timezone.now())
+    return last_text_id
 
 
 def _set_title_if_empty(ai_chat_id: int, title: str) -> None:
@@ -214,6 +352,7 @@ create_ai_chat = sync_to_async(_create_ai_chat)
 list_ai_chats = sync_to_async(_list_ai_chats)
 load_transcript = sync_to_async(_load_transcript)
 save_ai_message = sync_to_async(_save_ai_message)
+save_turn_blocks = sync_to_async(_save_turn_blocks)
 set_title_if_empty = sync_to_async(_set_title_if_empty)
 owns_ai_chat = sync_to_async(_owns_ai_chat)
 needs_title = sync_to_async(_needs_title)
