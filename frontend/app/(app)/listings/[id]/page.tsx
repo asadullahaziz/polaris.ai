@@ -1,8 +1,8 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Lock } from "lucide-react";
-import { useParams } from "next/navigation";
+import { Building2, Lock, MessageCircle } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -47,6 +47,7 @@ import {
   ApiError,
   getListing,
   getValuation,
+  openChatWith,
   setListingMandate,
   updateListing,
   type ListingDetail,
@@ -418,6 +419,80 @@ function DealSettingsCard({ data }: { data: ListingDetail }) {
   );
 }
 
+function ContactSellerDialog({
+  sellerId,
+  sellerName,
+  listingId,
+  listingTitle,
+}: {
+  sellerId: number;
+  sellerName: string;
+  listingId: number;
+  listingTitle: string;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+
+  async function send() {
+    setSending(true);
+    try {
+      // One chat per user-pair: this reopens the existing chat if there is one.
+      const row = await openChatWith({
+        counterparty_id: sellerId,
+        body: body.trim(),
+        listing_id: listingId,
+      });
+      setOpen(false);
+      router.push(`/chat?chat=${row.id}`);
+    } catch {
+      toast.error("Couldn't send your message. Try again.");
+      setSending(false);
+    }
+  }
+
+  return (
+    <>
+      <Button onClick={() => setOpen(true)}>
+        <MessageCircle /> Message seller
+      </Button>
+      <Dialog open={open} onOpenChange={(v) => !sending && setOpen(v)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Message {sellerName}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder={`Hi — I'm interested in ${listingTitle}. Is it still available?`}
+              rows={4}
+              autoFocus
+            />
+            <p className="text-xs text-muted-foreground">
+              The listing is attached automatically so {sellerName} sees what
+              you&apos;re asking about.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={sending}
+            >
+              Cancel
+            </Button>
+            <Button onClick={send} disabled={sending || !body.trim()}>
+              {sending ? "Sending…" : "Send message"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 export default function ListingDetailPage() {
   const params = useParams<{ id: string }>();
   const id = Number(params.id);
@@ -490,10 +565,17 @@ export default function ListingDetailPage() {
               {fmtMoney(data.asking_price)}
             </p>
           </div>
-          {isMine && (
+          {isMine ? (
             <Button variant="outline" onClick={() => setEditOpen(true)}>
               Edit
             </Button>
+          ) : (
+            <ContactSellerDialog
+              sellerId={data.seller.id}
+              sellerName={data.seller.name}
+              listingId={data.id}
+              listingTitle={title}
+            />
           )}
         </div>
 

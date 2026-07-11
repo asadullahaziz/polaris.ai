@@ -2,7 +2,7 @@
 Outreach fan-out Inngest function (Graph 3 · P5; architecture §6/§9).
 
 Triggered by `outreach/approved` (emitted by the approve REST action + the copilot
-`send_outreach` tool). This is the durable post-approval half of Graph 3 — the seller
+`launch_outreach_campaign` tool). This is the durable post-approval half of Graph 3 — the seller
 may close the tab; it outlives the copilot turn. It is deliberately **thin glue**: every
 guarantee (per-pair ledger, opener idempotency, one-chat-per-pair, one message per
 buyer) lives in `ai.outreach_service.send_to_buyer`, which is pure/sync and unit-tested

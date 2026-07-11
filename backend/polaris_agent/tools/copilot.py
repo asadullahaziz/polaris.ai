@@ -40,8 +40,8 @@ WRITE_TOOL_NAMES = {
     "create_buy_box",
     "update_buy_box",
     "delete_buy_box",
-    "send_outreach",
-    "send_chat_messages",
+    "launch_outreach_campaign",
+    "send_messages",
     "update_deal_stage",
 }
 
@@ -63,7 +63,7 @@ def _confirm(action: str, summary: str, proposal: dict) -> bool:
 
 
 class OutreachTarget(BaseModel):
-    """One buyer in a `send_outreach` batch, with the listing(s) THEY matched."""
+    """One buyer in a `launch_outreach_campaign` batch, with the listing(s) THEY matched."""
 
     user_id: int = Field(
         description="the buyer's user_id (from rank_buyers_for_listings / find_buyers)"
@@ -78,13 +78,18 @@ class OutreachTarget(BaseModel):
     )
 
 
-class OutgoingChatMessage(BaseModel):
-    """One message in a `send_chat_messages` batch."""
+class OutgoingMessage(BaseModel):
+    """One message in a `send_messages` batch — addressed to a PERSON, not a chat."""
 
-    chat_id: int = Field(description="target chat id (resolve with list_chats first)")
+    recipient_user_id: int = Field(
+        description="the recipient's user_id — a chat counterparty from list_chats, a "
+        "listing's seller_id, or a buyer from the rank/find tools"
+    )
     body: str = Field(description="the message text, written personally for this recipient")
     listing_ids: list[int] = Field(
-        default_factory=list, description="the user's listing ids to attach (optional)"
+        default_factory=list,
+        description="listing ids to attach for context (the user's own, or any active "
+        "marketplace listing — e.g. the listing being asked about)",
     )
 
 
@@ -197,8 +202,8 @@ def copilot_tools(principal_id: int) -> list:
     async def rank_buyers_for_listings(listing_ids: list[int], limit_per_listing: int = 10) -> dict:
         """Rank the buyers most likely to close on one or SEVERAL of the user's listings
         at once. Each buyer comes back with user_id, the listing(s) THEY matched, and a
-        per-listing 'why this buyer' reason — exactly the shape send_outreach needs, so a
-        buyer matching two listings can get one opener covering both. Deterministic —
+        per-listing 'why this buyer' reason — exactly the shape launch_outreach_campaign
+        needs, so a buyer matching two listings can get one opener covering both. Deterministic —
         narrate the reason, never the raw score. (This ranks + explains; sending outreach
         is a separate step.)"""
         return await dal.rank_buyers_for_listings(
@@ -453,17 +458,19 @@ def copilot_tools(principal_id: int) -> list:
         return await dal.delete_buy_box(principal_id, buy_box_id)
 
     @tool
-    async def send_outreach(
+    async def launch_outreach_campaign(
         recipients: list[OutreachTarget], config: RunnableConfig | None = None
     ) -> dict:
-        """FIRST-CONTACT outreach: send each selected buyer ONE opener message that opens
-        the 1:1 chat, attaching exactly the listing(s) THAT buyer matched — a buyer who
-        matches two listings gets one message covering both; a buyer who matches only one
-        gets only that one. Pick buyers + their listing_ids from rank_buyers_for_listings
-        (or find_buyers) first, and draft a personal body per buyer. Already-contacted
-        (buyer, listing) pairs are skipped automatically (the delivery ledger). Requires
-        the user's confirmation; the sends then run durably in the background with live
-        progress. For buyers you've ALREADY contacted, use send_chat_messages instead."""
+        """Launch an outreach CAMPAIGN pitching the user's listing(s) to selected buyers:
+        each buyer gets ONE opener message (opening their 1:1 chat) attaching exactly the
+        listing(s) THAT buyer matched — a buyer who matches two listings gets one message
+        covering both. Pick buyers + their listing_ids from rank_buyers_for_listings (or
+        find_buyers) first, and draft a personal body per buyer. The campaign machinery is
+        the point: already-contacted (buyer, listing) pairs are skipped automatically (the
+        delivery ledger), and after the user confirms, the sends run durably in the
+        background with live progress. Use this whenever pitching the user's own listings
+        to buyers — even a single one; for any other message (a follow-up, or contacting
+        someone about THEIR listing), use send_messages."""
         recipients = [
             OutreachTarget.model_validate(r) if not isinstance(r, OutreachTarget) else r
             for r in (recipients or [])
@@ -479,11 +486,11 @@ def copilot_tools(principal_id: int) -> list:
             return preview
         n_listings = len({lid for r in recipients for lid in r.listing_ids})
         if not _confirm(
-            "send_outreach",
+            "launch_outreach_campaign",
             f"Send outreach to {len(recipients)} buyer(s) across {n_listings} listing(s)?",
             {"recipients": preview["recipients"]},
         ):
-            return {"status": "cancelled", "action": "send_outreach"}
+            return {"status": "cancelled", "action": "launch_outreach_campaign"}
 
         # Commit: persist the campaign (via the pure ledger core), flip it to sending, and
         # fire the durable fan-out event. The Inngest emit lives HERE (not in dal), and is
@@ -512,43 +519,60 @@ def copilot_tools(principal_id: int) -> list:
         return res
 
     @tool
-    async def send_chat_messages(
-        messages: list[OutgoingChatMessage], config: RunnableConfig | None = None
+    async def send_messages(
+        messages: list[OutgoingMessage], config: RunnableConfig | None = None
     ) -> dict:
-        """Send message(s) into the user's EXISTING chats — e.g. follow-ups to buyers
-        already contacted about a listing. Draft each body personally for its recipient
-        (reference the deal and any prior exchange); optionally attach listings. One
-        confirmation card covers the whole batch; messages send as Polaris on the user's
-        behalf. This cannot open a new chat — first contact goes through send_outreach.
-        Resolve targets with list_chats first."""
+        """Send message(s) to ANY user — a counterparty the user already talks to OR a
+        brand-new contact: the 1:1 chat is opened automatically (there is exactly one
+        chat per pair of users), so first contact and follow-up are the same move. E.g.
+        ask a listing's seller about their property (address them by the listing's
+        seller_id and attach that listing for context), or follow up with a buyer. Draft
+        each body personally for its recipient; one confirmation card covers the whole
+        batch; messages send as Polaris on the user's behalf. For pitching the user's
+        OWN listings to buyers, use launch_outreach_campaign instead."""
         messages = [
-            OutgoingChatMessage.model_validate(m) if not isinstance(m, OutgoingChatMessage) else m
+            OutgoingMessage.model_validate(m) if not isinstance(m, OutgoingMessage) else m
             for m in (messages or [])
         ]
         if not messages:
             return {"status": "empty", "note": "no messages to send"}
-        # Propose: validate targets + resolve names so the confirm card shows real people.
-        # Read-only, so it re-runs harmlessly when the graph resumes after the interrupt.
-        names = await dal.preview_chat_sends(principal_id, [m.chat_id for m in messages])
-        invalid = [m.chat_id for m in messages if m.chat_id not in names]
+        # Propose: validate recipients + attachments and resolve names so the confirm
+        # card shows real people (and which sends open a NEW conversation). Read-only,
+        # so it re-runs harmlessly when the graph resumes after the interrupt.
+        preview = await dal.preview_message_sends(
+            principal_id,
+            [m.recipient_user_id for m in messages],
+            [lid for m in messages for lid in m.listing_ids],
+        )
+        recipients = preview["recipients"]
+        invalid = [m.recipient_user_id for m in messages if m.recipient_user_id not in recipients]
         if invalid:
             return {
-                "status": "invalid_chats",
-                "invalid_chat_ids": invalid,
-                "note": "these chats don't exist or aren't the user's — resolve targets "
-                "with list_chats and retry",
+                "status": "invalid_recipients",
+                "invalid_user_ids": invalid,
+                "note": "unknown user ids (or the user themself) — resolve recipients via "
+                "list_chats, a listing's seller_id, or the buyer tools, then retry",
+            }
+        if preview["invalid_listing_ids"]:
+            return {
+                "status": "invalid_attachments",
+                "invalid_listing_ids": preview["invalid_listing_ids"],
+                "note": "these listings aren't visible to the user (not theirs and not "
+                "active) — attach only listings you actually looked up",
             }
         if any(not m.body.strip() for m in messages):
             return {"status": "error", "note": "every message needs a non-empty body"}
-        recipients = [names[m.chat_id] for m in messages]
-        shown = ", ".join(recipients[:3]) + (
-            f" +{len(recipients) - 3} more" if len(recipients) > 3 else ""
+        names = {uid: r["name"] for uid, r in recipients.items()}
+        shown_names = [names[m.recipient_user_id] for m in messages]
+        shown = ", ".join(shown_names[:3]) + (
+            f" +{len(shown_names) - 3} more" if len(shown_names) > 3 else ""
         )
         proposal = {
             "messages": [
                 {
-                    "chat_id": m.chat_id,
-                    "to": names[m.chat_id],
+                    "recipient_user_id": m.recipient_user_id,
+                    "to": names[m.recipient_user_id],
+                    "new_chat": recipients[m.recipient_user_id]["new_chat"],
                     "body": m.body,
                     "listing_ids": m.listing_ids,
                 }
@@ -556,24 +580,24 @@ def copilot_tools(principal_id: int) -> list:
             ]
         }
         if not _confirm(
-            "send_chat_messages",
+            "send_messages",
             f"Send {len(messages)} message(s) to {shown}?",
             proposal,
         ):
-            return {"status": "cancelled", "action": "send_chat_messages"}
+            return {"status": "cancelled", "action": "send_messages"}
 
         # Commit: idempotent under this turn's thread_id (a resume replay can't double-send).
         thread_id = (config or {}).get("configurable", {}).get("thread_id") or "turn"
-        res = await dal.send_chat_messages(
+        res = await dal.send_messages(
             principal_id, [m.model_dump() for m in messages], f"copilot:{thread_id}"
         )
         # Live-deliver to any open chat window + arm each counterparty's away-responder
-        # (the follow-up is an inbound to their side) — both best-effort, like outreach.
+        # (the send is an inbound to their side) — both best-effort, like outreach.
         for r in res.get("results", []):
             payload = r.pop("message", None)
             if r.get("status") != "sent":
                 continue
-            r["to"] = names.get(r["chat_id"])
+            r["to"] = names.get(r["recipient_user_id"])
             try:
                 from channels.layers import get_channel_layer
 
@@ -652,8 +676,8 @@ def copilot_tools(principal_id: int) -> list:
         create_buy_box,
         update_buy_box,
         delete_buy_box,
-        send_outreach,
-        send_chat_messages,
+        launch_outreach_campaign,
+        send_messages,
         update_deal_stage,
         # low-stakes write (no gate)
         write_memory,

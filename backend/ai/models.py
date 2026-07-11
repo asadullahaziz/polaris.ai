@@ -16,7 +16,7 @@ crosses the disclosure boundary. Written by `chat.responder_service.log_action` 
 every commit / draft / escalate.
 
 `OutreachCampaign`/`OutreachRecipient` (added P5) are the seller's outreach ledger —
-one `send_outreach` = one campaign over one or more listings → N **registered** buyers,
+one `launch_outreach_campaign` = one campaign over one or more listings → N **registered** buyers,
 each buyer paired with exactly the listing(s) they matched.
 `OutreachRecipient` IS the delivery ledger: a partial-unique on SENT rows guarantees a
 listing reaches each buyer at most once, ever, across campaigns (a cancelled proposal
@@ -194,7 +194,7 @@ CHANNELS = [
 
 
 class OutreachCampaign(models.Model):
-    """One `send_outreach` = one campaign → N buyers, each with the listing(s) they
+    """One `launch_outreach_campaign` = one campaign → N buyers, each with the listing(s) they
     matched (the per-(buyer, listing) sets live on the recipient rows), staged
     `awaiting_approval` until the seller approves the batch (the send gate). `listing`
     is set when the campaign covers exactly ONE listing (display convenience);

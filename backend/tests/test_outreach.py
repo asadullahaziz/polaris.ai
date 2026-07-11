@@ -15,7 +15,7 @@ Covered:
   * the LEDGER GUARANTEE per pair — an already-reached (buyer, listing) drops out of a
     later campaign's attachments (partial overlap sends only the new listing);
   * idempotent replay; one-pair-chat reuse; approve/cancel gates; dispatch/outcome at
-    buyer granularity; the confirm-gated `send_outreach` tool commits NOTHING on decline.
+    buyer granularity; the confirm-gated `launch_outreach_campaign` tool commits NOTHING on decline.
 """
 
 from __future__ import annotations
@@ -414,11 +414,11 @@ def test_dispatch_info_outcome_and_finish_are_buyer_grained():
 
 # --- copilot tool wiring + confirm-gate ---------------------------------------
 @pytest.mark.django_db
-def test_send_outreach_tool_is_registered_and_confirm_gated():
+def test_launch_outreach_campaign_tool_is_registered_and_confirm_gated():
     seller = _user("seller@x.com")
     names = {t.name for t in tools_for("copilot", seller.id)}
-    assert "send_outreach" in names and "rank_buyers_for_listings" in names
-    assert "send_outreach" in WRITE_TOOL_NAMES
+    assert "launch_outreach_campaign" in names and "rank_buyers_for_listings" in names
+    assert "launch_outreach_campaign" in WRITE_TOOL_NAMES
     assert "launch_outreach" not in names  # the bundled rank-inside-write tool is gone
 
 
@@ -485,13 +485,13 @@ def seller_listing_buyer(db):
 
 
 @pytest.mark.django_db(transaction=True)
-async def test_send_outreach_tool_declined_commits_nothing(
+async def test_launch_outreach_campaign_tool_declined_commits_nothing(
     reset_checkpointer, seller_listing_buyer
 ):
     from asgiref.sync import sync_to_async
 
     seller, listing, buyer = seller_listing_buyer
-    tool = next(t for t in copilot_tools(seller.id) if t.name == "send_outreach")
+    tool = next(t for t in copilot_tools(seller.id) if t.name == "launch_outreach_campaign")
     checkpointer = await get_checkpointer()
     graph = _one_tool_graph(checkpointer, tool)
     cfg = {"configurable": {"thread_id": "outreach-decline-1"}}
@@ -503,7 +503,7 @@ async def test_send_outreach_tool_declined_commits_nothing(
     paused = await graph.ainvoke({"args": args}, config=cfg)
     assert "__interrupt__" in paused
     payload = paused["__interrupt__"][0].value
-    assert payload["action"] == "send_outreach"
+    assert payload["action"] == "launch_outreach_campaign"
     card = payload["proposal"]["recipients"][0]
     assert card["name"] == "Betty Buyer" and card["body"] == "custom opener"
     assert card["listings"][0]["already_contacted"] is False

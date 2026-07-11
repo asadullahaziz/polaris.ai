@@ -289,6 +289,8 @@ def test_marketplace_reads_cover_active_listings_without_private_mandate(user, o
     rows = dal._browse_listings(other.id)
     assert [r["listing_id"] for r in rows] == [lid]
     assert rows[0]["owned_by_principal"] is False and rows[0]["seller_name"] == "Sal Seller"
+    # seller_id rides along — it's how send_messages addresses "contact this seller".
+    assert rows[0]["seller_id"] == user.id
     assert dal._browse_listings(user.id)[0]["owned_by_principal"] is True
     # q filters by title/address fragment.
     assert dal._browse_listings(other.id, q="starter")[0]["listing_id"] == lid
@@ -298,6 +300,7 @@ def test_marketplace_reads_cover_active_listings_without_private_mandate(user, o
     # no empty slot to voice) — while the owner still gets it.
     detail = dal._get_listing_detail(lid, other.id)
     assert detail["owned_by_principal"] is False
+    assert detail["seller_id"] == user.id
     assert "mandate" not in detail
     assert dal._get_listing_detail(lid, user.id)["mandate"]["exists"] is True
 
@@ -436,42 +439,77 @@ def test_list_chats_filters_by_name_listing_and_awaiting_reply(user, other):
 
 
 @pytest.mark.django_db
-def test_send_chat_messages_is_member_scoped_and_replay_safe(user, other):
-    stranger_a = User.objects.create_user(email="sa@x.com", password="pw-12345678")
-    stranger_b = User.objects.create_user(email="sb@x.com", password="pw-12345678")
-    from chat.models import Message
-    from chat.services import get_or_create_chat
+def test_send_messages_opens_the_pair_chat_and_is_replay_safe(user, other):
+    from chat.models import Chat, Message
 
-    mine, _ = get_or_create_chat(user.id, other.id)
-    not_mine, _ = get_or_create_chat(stranger_a.id, stranger_b.id)
-
-    # preview: only my chats resolve (the tool refuses before the confirm card otherwise).
-    names = dal._preview_chat_sends(user.id, [mine.id, not_mine.id, 999999])
-    assert set(names) == {mine.id}
+    # preview: unknown ids and the principal themself don't resolve (the tool refuses
+    # before the confirm card otherwise); a first-time recipient is flagged new_chat.
+    prev = dal._preview_message_sends(user.id, [other.id, user.id, 999999], [])
+    assert set(prev["recipients"]) == {other.id}
+    assert prev["recipients"][other.id]["new_chat"] is True
 
     sends = [
-        {"chat_id": mine.id, "body": "Following up — still interested?", "listing_ids": []},
-        {"chat_id": not_mine.id, "body": "should never land", "listing_ids": []},
+        {"recipient_user_id": other.id, "body": "Saw your listing — still available?"},
+        {"recipient_user_id": 999999, "body": "should never land"},
     ]
-    res = dal._send_chat_messages(user.id, sends, "copilot:thread-1")
+    res = dal._send_messages(user.id, sends, "copilot:thread-1")
     assert res["sent"] == 1
-    by_chat = {r["chat_id"]: r for r in res["results"]}
-    assert by_chat[mine.id]["status"] == "sent"
-    assert by_chat[not_mine.id]["status"] == "error"
-    assert Message.objects.filter(chat=not_mine).count() == 0
-    sent_msg = Message.objects.get(chat=mine)
+    by_user = {r["recipient_user_id"]: r for r in res["results"]}
+    assert by_user[other.id]["status"] == "sent"
+    assert by_user[999999]["status"] == "error"
+    # First contact OPENED the one pair chat — no prior chat needed.
+    chat = Chat.objects.get(id=by_user[other.id]["chat_id"])
+    sent_msg = Message.objects.get(chat=chat)
     assert sent_msg.kind == "agent" and sent_msg.sender_id == user.id
+    # …and a second preview no longer flags a new chat.
+    assert dal._preview_message_sends(user.id, [other.id], [])["recipients"][other.id][
+        "new_chat"
+    ] is False
 
     # Same turn (same prefix) replayed → duplicate, nothing double-sent.
-    replay = dal._send_chat_messages(user.id, sends[:1], "copilot:thread-1")
+    replay = dal._send_messages(user.id, sends[:1], "copilot:thread-1")
     assert replay["sent"] == 0
     assert replay["results"][0]["status"] == "duplicate"
-    assert Message.objects.filter(chat=mine).count() == 1
+    assert Message.objects.filter(chat=chat).count() == 1
 
-    # A NEW turn (new thread_id) may follow up again — repeatable by design.
-    again = dal._send_chat_messages(user.id, sends[:1], "copilot:thread-2")
+    # A NEW turn (new thread_id) may message again — repeatable by design, and it
+    # REUSES the pair chat (one chat per pair, ever).
+    again = dal._send_messages(user.id, sends[:1], "copilot:thread-2")
     assert again["sent"] == 1
-    assert Message.objects.filter(chat=mine).count() == 2
+    assert Message.objects.filter(chat=chat).count() == 2
+    assert Chat.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_send_messages_buyer_contacts_seller_and_deal_engages(user, other):
+    """The buyer→seller path the tool split used to make impossible: `other` messages
+    the seller of an active listing, attaching it. The pair chat opens, and the deals
+    seam files the inquiry as (listing, buyer=sender) at stage 'engaged'."""
+    from deals.models import Deal
+
+    lid = dal._create_listing(user.id, {"address": "9 Hollis Ct", "asking_price": 439200})[
+        "listing_id"
+    ]
+    draft_lid = dal._create_listing(user.id, {"address": "10 Hollis Ct", "asking_price": 1})[
+        "listing_id"
+    ]
+    dal._update_listing(lid, user.id, {"status": "active"})
+
+    # Attachment visibility: the buyer can attach the ACTIVE listing, not the draft.
+    prev = dal._preview_message_sends(other.id, [user.id], [lid, draft_lid])
+    assert prev["recipients"][user.id]["new_chat"] is True
+    assert prev["invalid_listing_ids"] == [draft_lid]
+
+    res = dal._send_messages(
+        other.id,
+        [{"recipient_user_id": user.id, "body": "Interested in Hollis Ct.", "listing_ids": [lid]}],
+        "copilot:thread-1",
+    )
+    assert res["sent"] == 1
+    deal = Deal.objects.get(listing_id=lid, buyer_id=other.id)
+    assert deal.seller_id == user.id
+    assert deal.stage == "engaged"  # buyer inquiring = engagement (deals/service.py)
+    assert deal.chat_id == res["results"][0]["chat_id"]
 
 
 # ============================ confirm-every-write (interrupt/resume) ============
@@ -542,38 +580,42 @@ async def test_write_tool_declined_commits_nothing(reset_checkpointer, user):
 
 
 @pytest.mark.django_db(transaction=True)
-async def test_send_chat_messages_interrupts_with_drafts_then_sends_on_approve(
+async def test_send_messages_interrupts_with_drafts_then_sends_on_approve(
     reset_checkpointer, user, other
 ):
-    """The batch follow-up write rides the same confirm gate: the interrupt payload
-    carries the per-recipient drafts (what the card renders), nothing is sent until the
-    approve resume, and the commit posts kind='agent' messages as the principal."""
+    """The batch message write rides the same confirm gate: the interrupt payload
+    carries the per-recipient drafts (what the card renders, incl. the new_chat flag),
+    NOTHING exists until the approve resume — not even the chat — and the commit opens
+    the pair chat and posts kind='agent' messages as the principal."""
     from asgiref.sync import sync_to_async
 
-    from chat.models import Message
-    from chat.services import get_or_create_chat
+    from chat.models import Chat, Message
 
-    chat, _ = await sync_to_async(get_or_create_chat)(user.id, other.id)
     checkpointer = await get_checkpointer()
-    graph = _one_tool_graph(checkpointer, _tool_by_name(user.id, "send_chat_messages"))
+    graph = _one_tool_graph(checkpointer, _tool_by_name(user.id, "send_messages"))
     cfg = {"configurable": {"thread_id": "confirm-followup-1"}}
     args = {
         "messages": [
-            {"chat_id": chat.id, "body": "Any thoughts on the Alder St deal?", "listing_ids": []}
+            {
+                "recipient_user_id": other.id,
+                "body": "Any thoughts on the Alder St deal?",
+                "listing_ids": [],
+            }
         ]
     }
 
     paused = await graph.ainvoke({"args": args}, config=cfg)
     assert "__interrupt__" in paused
     payload = paused["__interrupt__"][0].value
-    assert payload["kind"] == "confirm_write" and payload["action"] == "send_chat_messages"
+    assert payload["kind"] == "confirm_write" and payload["action"] == "send_messages"
     drafts = payload["proposal"]["messages"]
-    assert len(drafts) == 1 and drafts[0]["to"] and drafts[0]["chat_id"] == chat.id
-    count = await sync_to_async(Message.objects.filter(chat=chat).count)()
-    assert count == 0  # nothing sent while paused
+    assert len(drafts) == 1 and drafts[0]["to"] and drafts[0]["recipient_user_id"] == other.id
+    assert drafts[0]["new_chat"] is True
+    assert await sync_to_async(Chat.objects.count)() == 0  # nothing opened while paused
 
     done = await graph.ainvoke(Command(resume={"approved": True}), config=cfg)
     assert done["result"]["status"] == "sent" and done["result"]["sent"] == 1
+    chat = await sync_to_async(Chat.objects.get)()
     msg = await sync_to_async(Message.objects.get)(chat=chat)
     assert msg.kind == "agent" and msg.sender_id == user.id
 

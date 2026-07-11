@@ -480,6 +480,7 @@ def _browse_listings(principal_id: int, q: str | None = None, limit: int = 20) -
     rows = []
     for lst in qs[: max(1, min(int(limit), 50))]:
         row = _listing_summary_row(lst)
+        row["seller_id"] = lst.seller_id
         row["seller_name"] = lst.seller.display_name
         row["owned_by_principal"] = lst.seller_id == principal_id
         rows.append(row)
@@ -522,6 +523,7 @@ def _get_listing_detail(listing_id: int, seller_id: int) -> dict:
         "bundle_type": lst.bundle_type,
         "asking_price": float(lst.asking_price) if lst.asking_price is not None else None,
         "properties": props,
+        "seller_id": lst.seller_id,
         "seller_name": lst.seller.display_name,
         "owned_by_principal": owned,
     }
@@ -937,61 +939,94 @@ def _list_chats(
     return out[:limit]
 
 
-def _preview_chat_sends(principal_id: int, chat_ids: list[int]) -> dict[int, str]:
-    """Membership check + counterparty names for the confirm card. Read-only (safe to
-    re-run on an interrupt resume). A chat_id missing from the result is invalid — the
-    principal isn't a member (or it doesn't exist)."""
-    from chat.models import ChatMember
+def _preview_message_sends(
+    principal_id: int, user_ids: list[int], listing_ids: list[int]
+) -> dict:
+    """Recipient + attachment validation for the confirm card. Read-only (safe to re-run
+    on an interrupt resume). Resolves each valid recipient's display name and whether the
+    send OPENS a new chat (no pair chat yet); a user_id missing from `recipients` is
+    invalid (unknown, or the principal themself). Attachments follow marketplace
+    visibility — ids the principal can't see come back in `invalid_listing_ids`."""
+    from django.contrib.auth import get_user_model
 
-    mine = set(
-        ChatMember.objects.filter(chat_id__in=chat_ids, user_id=principal_id).values_list(
-            "chat_id", flat=True
+    from catalog.models import Listing
+    from chat.models import Chat, make_pair_key
+
+    ids = {int(u) for u in user_ids} - {principal_id}
+    users = list(get_user_model().objects.filter(id__in=ids))
+    existing = set(
+        Chat.objects.filter(
+            pair_key__in=[make_pair_key(principal_id, u.id) for u in users]
+        ).values_list("pair_key", flat=True)
+    )
+    recipients = {
+        u.id: {
+            "name": u.display_name,
+            "new_chat": make_pair_key(principal_id, u.id) not in existing,
+        }
+        for u in users
+    }
+    wanted = {int(x) for x in listing_ids}
+    visible = set(
+        Listing.objects.filter(_visible_listing_q(principal_id), id__in=wanted).values_list(
+            "id", flat=True
         )
     )
-    others = (
-        ChatMember.objects.filter(chat_id__in=mine)
-        .exclude(user_id=principal_id)
-        .select_related("user")
-    )
-    return {m.chat_id: m.user.display_name for m in others}
+    return {"recipients": recipients, "invalid_listing_ids": sorted(wanted - visible)}
 
 
-def _send_chat_messages(principal_id: int, sends: list[dict], dedup_prefix: str) -> dict:
-    """Commit a confirmed batch of follow-ups: one kind='agent' message per chat, sent as
-    Polaris for the principal. Membership is re-checked per chat; each insert is
-    idempotent under `{dedup_prefix}:{chat_id}:{body-hash}` so a resume replay can't
-    double-send (follow-ups stay repeatable across turns — unlike the outreach ledger,
-    there is deliberately no once-ever rule here)."""
+def _send_messages(principal_id: int, sends: list[dict], dedup_prefix: str) -> dict:
+    """Commit a confirmed batch: one kind='agent' message per RECIPIENT, sent as Polaris
+    for the principal. The pair chat is found-or-created per recipient (the same move as
+    the web client's POST /api/chats/), so first contact and follow-up are one operation.
+    Each insert is idempotent under `{dedup_prefix}:{chat_id}:{body-hash}` so a resume
+    replay can't double-send (sends stay repeatable across turns — unlike the outreach
+    ledger, there is deliberately no once-ever rule here)."""
     import hashlib
 
-    from chat.services import chat_membership, post_agent_message
+    from django.contrib.auth import get_user_model
+
+    from chat.services import get_or_create_chat, post_agent_message
 
     results: list[dict] = []
     for s in sends:
-        chat_id = int(s["chat_id"])
+        recipient_id = int(s["recipient_user_id"])
         body = (s.get("body") or "").strip()
-        if chat_membership(chat_id, principal_id) is None:
+        if (
+            recipient_id == principal_id
+            or not get_user_model().objects.filter(id=recipient_id).exists()
+        ):
             results.append(
-                {"chat_id": chat_id, "status": "error", "error": "not a member of this chat"}
+                {
+                    "recipient_user_id": recipient_id,
+                    "status": "error",
+                    "error": "unknown recipient",
+                }
             )
             continue
         if not body:
-            results.append({"chat_id": chat_id, "status": "error", "error": "empty body"})
+            results.append(
+                {"recipient_user_id": recipient_id, "status": "error", "error": "empty body"}
+            )
             continue
+        chat, _created = get_or_create_chat(principal_id, recipient_id)
         digest = hashlib.sha1(body.encode()).hexdigest()[:8]
         saved = post_agent_message(
-            chat_id,
+            chat.id,
             principal_id,
             body,
             attachment_listing_ids=s.get("listing_ids") or None,
-            dedup_key=f"{dedup_prefix}:{chat_id}:{digest}",
+            dedup_key=f"{dedup_prefix}:{chat.id}:{digest}",
         )
         if saved.get("duplicate"):
-            results.append({"chat_id": chat_id, "status": "duplicate"})
+            results.append(
+                {"recipient_user_id": recipient_id, "chat_id": chat.id, "status": "duplicate"}
+            )
             continue
         results.append(
             {
-                "chat_id": chat_id,
+                "recipient_user_id": recipient_id,
+                "chat_id": chat.id,
                 "status": "sent",
                 "message_id": saved["id"],
                 # The full wire-shape message, for the caller's live WS broadcast only —
@@ -1003,8 +1038,8 @@ def _send_chat_messages(principal_id: int, sends: list[dict], dedup_prefix: str)
 
 
 list_chats = sync_to_async(_list_chats)
-preview_chat_sends = sync_to_async(_preview_chat_sends)
-send_chat_messages = sync_to_async(_send_chat_messages)
+preview_message_sends = sync_to_async(_preview_message_sends)
+send_messages = sync_to_async(_send_messages)
 
 
 # ---- Away-responder (Graph 2) — principal-centric plan + deal math (P4) ----------

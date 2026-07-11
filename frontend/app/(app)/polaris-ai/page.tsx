@@ -57,6 +57,7 @@ const SUGGESTIONS = [
   "Value listing #1 and suggest an asking price",
   "Create a listing for 123 Main St — 3bd, 2ba, 1800 sqft",
   "Reach out to the best buyers for one of my listings",
+  "Find a marketplace listing that looks underpriced and message its seller",
 ];
 
 export default function PolarisAiPage() {

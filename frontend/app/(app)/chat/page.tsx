@@ -226,8 +226,8 @@ function ChatPageInner() {
           <div className="p-2">
             {chats.length === 0 && (
               <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-                No conversations yet. Find buyers on the Buyers page, or let outreach open
-                them for you.
+                No conversations yet. Find buyers on the Buyers page, message a seller
+                from any listing, or let outreach open them for you.
               </p>
             )}
             {chats.map((c) => (

@@ -35,8 +35,8 @@ TOOL_LABELS: dict[str, str] = {
     "create_buy_box": "Creating the buy box…",
     "update_buy_box": "Updating the buy box…",
     "delete_buy_box": "Deleting the buy box…",
-    "send_outreach": "Preparing outreach…",
-    "send_chat_messages": "Drafting messages…",
+    "launch_outreach_campaign": "Preparing outreach…",
+    "send_messages": "Drafting messages…",
 }
 
 

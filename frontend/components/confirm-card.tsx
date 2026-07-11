@@ -32,8 +32,10 @@ export type ConfirmPayload = {
     | "update_buy_box"
     | "delete_buy_box"
     | "launch_outreach" // legacy (pre-2026-07-07 cards in old timelines)
-    | "send_outreach"
-    | "send_chat_messages"
+    | "send_outreach" // legacy (pre-2026-07-11, renamed launch_outreach_campaign)
+    | "send_chat_messages" // legacy (pre-2026-07-11, replaced by send_messages)
+    | "launch_outreach_campaign"
+    | "send_messages"
     | string;
   summary: string;
   proposal: Record<string, unknown>;
@@ -143,13 +145,26 @@ function SendOutreachProposal({ proposal }: { proposal: Record<string, unknown> 
 
 function SendMessagesProposal({ proposal }: { proposal: Record<string, unknown> }) {
   const messages =
-    (proposal.messages as { chat_id: number; to: string; body: string; listing_ids?: number[] }[]) ??
-    [];
+    (proposal.messages as {
+      recipient_user_id?: number;
+      chat_id?: number; // legacy send_chat_messages cards
+      to: string;
+      new_chat?: boolean;
+      body: string;
+      listing_ids?: number[];
+    }[]) ?? [];
   return (
     <div className="space-y-2">
       {messages.map((m, i) => (
         <div key={i} className="rounded-md border p-3">
-          <p className="text-xs font-medium text-muted-foreground">To {m.to}</p>
+          <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+            To {m.to}
+            {m.new_chat && (
+              <Badge variant="outline" className="text-[10px]">
+                new conversation
+              </Badge>
+            )}
+          </p>
           <p className="mt-1 whitespace-pre-wrap text-sm">{m.body}</p>
           {(m.listing_ids?.length ?? 0) > 0 && (
             <p className="mt-1 text-xs text-muted-foreground">
@@ -193,9 +208,9 @@ export function ConfirmCard({
       <CardContent className="px-4">
         {action === "launch_outreach" ? (
           <OutreachProposal proposal={proposal} />
-        ) : action === "send_outreach" ? (
+        ) : action === "launch_outreach_campaign" || action === "send_outreach" ? (
           <SendOutreachProposal proposal={proposal} />
-        ) : action === "send_chat_messages" ? (
+        ) : action === "send_messages" || action === "send_chat_messages" ? (
           <SendMessagesProposal proposal={proposal} />
         ) : (
           <FieldGrid fields={fields} />
