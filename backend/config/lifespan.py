@@ -10,8 +10,10 @@ startup eager and shutdown clean.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
+from polaris_agent import observability, prompt_store
 from polaris_agent.checkpointer import close_checkpointer, open_checkpointer
 
 log = logging.getLogger(__name__)
@@ -33,10 +35,22 @@ async def lifespan_app(scope, receive, send):
                     "eager checkpointer startup failed; will open lazily on first use",
                     exc_info=True,
                 )
+            # Warm the Langfuse prompt cache so runtime reads are memory-speed.
+            # Same posture: eager but never fatal — fallbacks cover a cold cache.
+            if prompt_store.enabled():
+                try:
+                    await asyncio.to_thread(prompt_store.warm_up)
+                    log.info("langfuse prompt cache warmed")
+                except Exception:  # pragma: no cover
+                    log.warning(
+                        "langfuse prompt warm-up failed; code fallbacks cover",
+                        exc_info=True,
+                    )
             await send({"type": "lifespan.startup.complete"})
         elif message["type"] == "lifespan.shutdown":
             try:
                 await close_checkpointer()
+                observability.shutdown()  # flush any buffered Langfuse traces
             finally:
                 await send({"type": "lifespan.shutdown.complete"})
             return

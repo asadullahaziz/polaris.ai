@@ -157,18 +157,31 @@ async def _summary_text(info: dict, outcome: dict) -> str:
         + "."
     )
     try:
+        from polaris_agent import observability, prompt_store
         from polaris_agent.models import get_model
 
-        resp = await get_model("workhorse").ainvoke(
-            "You are Polaris, a real-estate copilot. In 1-2 warm, concrete sentences, "
-            "summarize this outreach result for the seller. Use the exact numbers; invent "
-            "nothing.\n\n"
-            f"Listing(s): {label}\n"
-            f"Buyers reached (chats opened): {outcome['sent']}\n"
-            f"Skipped (already in contact): {outcome['skipped']}\n"
-            f"Failed: {outcome['failed']}\n"
+        cp = await prompt_store.acompile(
+            "outreach/summary",
+            label=label,
+            sent=str(outcome["sent"]),
+            skipped=str(outcome["skipped"]),
+            failed=str(outcome["failed"]),
         )
-        return (resp.content or "").strip() or templated
+        ai_chat_id = info.get("copilot_ai_chat_id")
+        with observability.trace_turn(
+            "outreach-summary",
+            user_id=str(info["seller_id"]) if info.get("seller_id") else None,
+            session_id=f"copilot:{ai_chat_id}" if ai_chat_id is not None else None,
+            tags=["outreach-summary"],
+            metadata={"prompt_version": cp.version, "prompt_fallback": cp.is_fallback},
+            input={"listings": label, **outcome},
+        ) as trace:
+            resp = await get_model("workhorse").ainvoke(
+                cp.text, config=observability.callback_config()
+            )
+            text = (resp.content or "").strip() or templated
+            trace.record(output=text)
+        return text
     except Exception as exc:  # pragma: no cover - provider may be down in dev
         log.warning("summary narration failed, using template: %s", exc)
         return templated

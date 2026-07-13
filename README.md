@@ -16,6 +16,7 @@ Polaris AI works as both an **agent** that can do the work for either side and a
 - **Backend:** Python · Django REST Framework (DRF)
 - **Database:** PostgreSQL + PostGIS
 - **AI agents:** LangGraph, with models served via OpenRouter (Claude Sonnet / Opus / Haiku)
+- **Observability & prompts:** Langfuse Cloud — LLM tracing + versioned system prompts (optional; set the `LANGFUSE_*` keys from `.env.example`, everything degrades to built-in prompts without them)
 - **Async orchestration:** Inngest
 - **Real-time messaging:** WebSockets
 - _Auth, media storage, search, hosting, and payments: to be decided._

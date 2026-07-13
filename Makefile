@@ -1,5 +1,5 @@
 # Polaris AI — dev convenience targets. The canonical bring-up is `docker compose up`.
-.PHONY: up down build logs ps test migrate makemigrations shell psql spike-test fmt seed seed-reset
+.PHONY: up down build logs ps test migrate makemigrations shell psql spike-test fmt seed seed-reset sync-prompts
 
 start up:            ## Bring the whole stack up (build if needed)
 	docker compose up --build
@@ -31,6 +31,9 @@ seed:          ## Seed the King County demo data (idempotent)
 
 seed-reset:    ## Rebuild the seed from scratch (fresh dates)
 	docker compose exec backend python manage.py seed_kc --reset
+
+sync-prompts:  ## Push code prompts to Langfuse (create-if-missing; --update/--promote via ARGS)
+	docker compose exec backend python manage.py sync_prompts $(ARGS)
 
 migrate:
 	docker compose exec backend python manage.py migrate

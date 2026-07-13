@@ -128,7 +128,9 @@ async def thread_inbound(ctx: inngest.Context) -> dict:
 
     from polaris_agent.graphs.responder import run_responder
 
-    final = await run_responder(plan)
+    # trace_meta is Langfuse-only context: the run id groups the duplicate traces an
+    # at-least-once Inngest retry produces (the DB commit gate dedups the real reply).
+    final = await run_responder(plan, trace_meta={"inngest_run_id": getattr(ctx, "run_id", None)})
     outcome = final.get("outcome")
     result = final.get("commit_result") or {}
 

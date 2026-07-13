@@ -33,6 +33,7 @@ tools) — the same "engine scores, LLM narrates" collapse as Graph 3.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -41,7 +42,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from chat import responder_service as svc
-from polaris_agent import dal
+from polaris_agent import dal, prompt_store
 from polaris_agent.disclosure import (
     approve_shares,
     output_check,
@@ -49,13 +50,7 @@ from polaris_agent.disclosure import (
     render_shared_lines,
 )
 from polaris_agent.models import get_model
-from polaris_agent.prompts import (
-    responder_decide_prompt,
-    responder_draft_prompt,
-    responder_triage_prompt,
-    screen_prompt,
-    wrap_counterparty,
-)
+from polaris_agent.prompts import wrap_counterparty
 from polaris_agent.state import ResponderState
 
 log = logging.getLogger(__name__)
@@ -243,8 +238,9 @@ async def _screen(state: ResponderState) -> dict:
     inbound_body = (state.get("inbound") or {}).get("body", "")
     try:
         model = get_model("bulk").with_structured_output(ScreenVerdict)
+        system = await prompt_store.compose_responder_screen()
         verdict: ScreenVerdict = await model.ainvoke(
-            f"{screen_prompt()}\n\n{wrap_counterparty(inbound_body)}"
+            f"{system.text}\n\n{wrap_counterparty(inbound_body)}"
         )
         return {"screen_flagged": bool(verdict.suspicious), "escalation_reason": verdict.reason}
     except Exception as exc:  # noqa: BLE001 - screen is a mitigation; never block the turn on it
@@ -258,8 +254,9 @@ async def _triage(state: ResponderState) -> dict:
     inbound_body = (state.get("inbound") or {}).get("body", "")
     try:
         model = get_model("bulk").with_structured_output(TriageVerdict)
+        system = await prompt_store.compose_responder_triage()
         verdict: TriageVerdict = await model.ainvoke(
-            f"{responder_triage_prompt()}\n\n{wrap_counterparty(inbound_body)}"
+            f"{system.text}\n\n{wrap_counterparty(inbound_body)}"
         )
         return {"intent": verdict.intent}
     except Exception as exc:  # noqa: BLE001 - fail to a safe, non-assessing intent
@@ -283,8 +280,9 @@ async def _decide(state: ResponderState) -> dict:
     """STAGE 1 — PRIVATE context in, CLOSED structured action out. No prose."""
     model = get_model("workhorse").with_structured_output(ResponderDecision)
     deal_stage = (state.get("deal") or {}).get("stage")
+    system = await prompt_store.compose_responder_decide(state.get("stance", "neutral"), deal_stage)
     prompt = (
-        f"{responder_decide_prompt(state.get('stance', 'neutral'), deal_stage)}\n\n"
+        f"{system.text}\n\n"
         f"Inbound intent (triage): {state.get('intent')}\n\n"
         f"{_private_block(state)}\n\n{_public_block(state)}\n\n"
         "Decide the single best action now."
@@ -350,8 +348,11 @@ async def _draft(state: ResponderState) -> dict:
         if feedback
         else ""
     )
+    system = await prompt_store.compose_responder_draft(
+        state.get("stance", "neutral"), state.get("display_name")
+    )
     prompt = (
-        f"{responder_draft_prompt(state.get('stance', 'neutral'), state.get('display_name'))}\n\n"
+        f"{system.text}\n\n"
         f"{_public_block(state)}\n\n"
         f"{shares_block}"
         f"{feedback_block}"
@@ -522,9 +523,10 @@ def _get_graph():
     return _graph
 
 
-async def run_responder(plan: dict) -> dict:
+async def run_responder(plan: dict, *, trace_meta: dict | None = None) -> dict:
     """Run one away-responder turn from a `dal.responder_plan` dict. Returns the final
-    state (carrying `outcome` + `commit_result`)."""
+    state (carrying `outcome` + `commit_result`). `trace_meta` is caller context for
+    the Langfuse trace only (e.g. the Inngest run id — groups at-least-once retries)."""
     initial: ResponderState = {
         "principal_id": plan["principal_id"],
         "counterparty_user_id": plan.get("counterparty_user_id"),
@@ -553,4 +555,39 @@ async def run_responder(plan: dict) -> dict:
         "draft_attempts": 0,
         "draft_feedback": None,
     }
-    return await _get_graph().ainvoke(initial)
+    from polaris_agent import observability  # local: avoid import cycles at module load
+
+    surfaces = ["responder/screen", "responder/triage", "responder/decide", "responder/draft"]
+    # Sync SDK reads — cache hits post-warm-up, but never risk the event loop on a
+    # cold cache (Inngest handlers run on it).
+    prompt_versions = (
+        await asyncio.to_thread(prompt_store.current_versions, surfaces)
+        if prompt_store.enabled()
+        else prompt_store.current_versions(surfaces)
+    )
+    with observability.trace_turn(
+        "responder-turn",
+        user_id=str(plan["principal_id"]),
+        session_id=f"chat:{plan['chat_id']}",
+        tags=["responder", plan.get("stance") or "neutral"],
+        metadata={
+            "chat_id": plan["chat_id"],
+            "inbound_message_id": plan["inbound_message_id"],
+            "prompt_versions": prompt_versions,
+            **(trace_meta or {}),
+        },
+        input=(plan.get("inbound") or {}).get("body"),
+    ) as trace:
+        final = await _get_graph().ainvoke(initial, config=observability.callback_config())
+        trace.record(
+            output={
+                "outcome": final.get("outcome"),
+                "body": ((final.get("drafted") or {}).get("body") or "")[:2000] or None,
+            },
+            outcome=final.get("outcome"),
+            action=(final.get("decision") or {}).get("action"),
+            intent=final.get("intent"),
+            gate_error=final.get("gate_error"),
+            draft_attempts=final.get("draft_attempts"),
+        )
+    return final
