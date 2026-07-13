@@ -321,6 +321,7 @@ def escalate(
     reason: str,
     *,
     terminal: str | None = None,
+    private_rationale: str | None = None,
 ) -> dict:
     """Hand to the human WITHOUT posting anything to the counterparty (architecture §5):
     set the chat status + a notification. No cross-boundary message on escalation.
@@ -350,7 +351,7 @@ def escalate(
         chat_id,
         "escalated",
         f"escalated chat {chat_id}",
-        private_rationale=reason,
+        private_rationale=private_rationale or reason,
     )
     return {"status": "escalated", "reason": reason}
 

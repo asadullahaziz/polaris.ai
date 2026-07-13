@@ -1293,6 +1293,7 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
         **deal_ctx,
         "principal_id": principal_id,
         "counterparty_user_id": counterparty_user_id,
+        "counterparty_name": _display_name(counterparty_user_id),
         "chat_id": chat_id,
         "inbound_message_id": inbound_message_id,
         "inbound": inbound,

@@ -77,7 +77,12 @@ def _one_tool_turn(chat_id: int, i: int) -> int | None:
             AIMessage(
                 content=f"checking {i}",
                 tool_calls=[
-                    {"name": "get_comps", "args": {"listing_id": i}, "id": f"call_{i}", "type": "tool_call"}
+                    {
+                        "name": "get_comps",
+                        "args": {"listing_id": i},
+                        "id": f"call_{i}",
+                        "type": "tool_call",
+                    }
                 ],
             ),
             ToolMessage(content=f"comps for {i}", tool_call_id=f"call_{i}", name="get_comps"),
@@ -174,7 +179,9 @@ def test_transcript_drops_broken_tool_pairs(user):
         [
             AIMessage(
                 content="on it",
-                tool_calls=[{"name": "create_listing", "args": {}, "id": "call_x", "type": "tool_call"}],
+                tool_calls=[
+                    {"name": "create_listing", "args": {}, "id": "call_x", "type": "tool_call"}
+                ],
             )
         ],
     )
@@ -183,7 +190,12 @@ def test_transcript_drops_broken_tool_pairs(user):
         ai_chat_id=chat_id,
         role="tool",
         content="orphan",
-        tool_calls={"kind": "tool_result", "tool_call_id": "call_gone", "name": "get_comps", "label": "x"},
+        tool_calls={
+            "kind": "tool_result",
+            "tool_call_id": "call_gone",
+            "name": "get_comps",
+            "label": "x",
+        },
     )
 
     history = dal._load_transcript(chat_id)
@@ -462,9 +474,10 @@ def test_send_messages_opens_the_pair_chat_and_is_replay_safe(user, other):
     sent_msg = Message.objects.get(chat=chat)
     assert sent_msg.kind == "agent" and sent_msg.sender_id == user.id
     # …and a second preview no longer flags a new chat.
-    assert dal._preview_message_sends(user.id, [other.id], [])["recipients"][other.id][
-        "new_chat"
-    ] is False
+    assert (
+        dal._preview_message_sends(user.id, [other.id], [])["recipients"][other.id]["new_chat"]
+        is False
+    )
 
     # Same turn (same prefix) replayed → duplicate, nothing double-sent.
     replay = dal._send_messages(user.id, sends[:1], "copilot:thread-1")

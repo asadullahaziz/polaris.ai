@@ -94,6 +94,13 @@ class ResponderDecision(BaseModel):
     share_comps: bool = Field(default=False, description="cite comp sales (sell side)")
     share_valuation: bool = Field(default=False, description="cite the market value range")
     private_rationale: str = Field(default="", description="audit only — NEVER sent")
+    escalation_note: str = Field(
+        default="",
+        description="ONLY when action='escalate': one short sentence TO YOUR PRINCIPAL "
+        'naming what the counterparty is asking for or needs from them (e.g. "They are '
+        'asking for the roof age, service records, and a walkthrough time."). Owner-only; '
+        "never sent to the counterparty.",
+    )
 
 
 def _clean_fields(model: _DisclosedFields) -> dict:
@@ -242,7 +249,12 @@ async def _screen(state: ResponderState) -> dict:
         verdict: ScreenVerdict = await model.ainvoke(
             f"{system.text}\n\n{wrap_counterparty(inbound_body)}"
         )
-        return {"screen_flagged": bool(verdict.suspicious), "escalation_reason": verdict.reason}
+        # Only a FLAGGED verdict carries its reason forward — a clean verdict's "why
+        # it's fine" rationale must never surface as a later escalation's reason.
+        out: dict = {"screen_flagged": bool(verdict.suspicious)}
+        if verdict.suspicious:
+            out["escalation_reason"] = verdict.reason
+        return out
     except Exception as exc:  # noqa: BLE001 - screen is a mitigation; never block the turn on it
         log.warning("injection screen failed, continuing unflagged: %s", exc)
         return {"screen_flagged": False}
@@ -258,7 +270,12 @@ async def _triage(state: ResponderState) -> dict:
         verdict: TriageVerdict = await model.ainvoke(
             f"{system.text}\n\n{wrap_counterparty(inbound_body)}"
         )
-        return {"intent": verdict.intent}
+        out: dict = {"intent": verdict.intent}
+        if verdict.intent == "suspicious":
+            out["escalation_reason"] = (
+                "Their message looked like an attempt to manipulate your assistant."
+            )
+        return out
     except Exception as exc:  # noqa: BLE001 - fail to a safe, non-assessing intent
         log.warning("triage failed, defaulting to listing_question: %s", exc)
         return {"intent": "listing_question"}
@@ -295,6 +312,7 @@ async def _decide(state: ResponderState) -> dict:
             "share_comps": decision.share_comps,
             "share_valuation": decision.share_valuation,
             "private_rationale": decision.private_rationale,
+            "escalation_note": decision.escalation_note,
         }
     }
 
@@ -379,9 +397,24 @@ def _validate(state: ResponderState) -> dict:
 
 
 async def _escalate(state: ResponderState) -> dict:
-    """Set status + notify the principal; post NOTHING to the counterparty (§5)."""
-    reason = state.get("gate_error") or state.get("escalation_reason") or "needs a human"
-    await sync_to_async(svc.escalate)(state["chat_id"], state["principal_id"], reason)
+    """Set status + notify the principal; post NOTHING to the counterparty (§5). The
+    notification leads with WHO reached out and what they need; the decide-stage
+    `private_rationale` goes to the owner-only audit log, not the headline."""
+    decision = state.get("decision") or {}
+    who = state.get("counterparty_name") or "The counterparty"
+    detail = (
+        state.get("gate_error")
+        or (decision.get("escalation_note") or "").strip()
+        or state.get("escalation_reason")
+        or "Your reply is needed."
+    )
+    reason = f"{who} has reached out. {detail}"
+    await sync_to_async(svc.escalate)(
+        state["chat_id"],
+        state["principal_id"],
+        reason,
+        private_rationale=decision.get("private_rationale"),
+    )
     return {"outcome": "escalated", "escalation_reason": reason}
 
 
@@ -530,6 +563,7 @@ async def run_responder(plan: dict, *, trace_meta: dict | None = None) -> dict:
     initial: ResponderState = {
         "principal_id": plan["principal_id"],
         "counterparty_user_id": plan.get("counterparty_user_id"),
+        "counterparty_name": plan.get("counterparty_name"),
         "chat_id": plan["chat_id"],
         "inbound_message_id": plan["inbound_message_id"],
         "inbound": plan["inbound"],

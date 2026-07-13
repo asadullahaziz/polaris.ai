@@ -126,3 +126,55 @@ def test_draft_for_approval_still_drafts(monkeypatch):
     result, calls = _run_commit(_state("inform", "draft_for_approval"), monkeypatch)
     assert result["outcome"] == "draft"
     assert "commit_reply" not in calls
+
+
+# ---- _escalate: owner-facing headline ----------------------------------------------
+def _run_escalate(state, monkeypatch):
+    captured = {}
+
+    def fake_escalate(chat_id, principal_id, reason, **kw):
+        captured.update(chat_id=chat_id, principal_id=principal_id, reason=reason, **kw)
+        return {"status": "escalated", "reason": reason}
+
+    monkeypatch.setattr(g.svc, "escalate", fake_escalate)
+    result = async_to_sync(g._escalate)({"chat_id": 1, "principal_id": 10, **state})
+    return result, captured
+
+
+def test_escalate_headline_names_counterparty_and_note(monkeypatch):
+    """A decide-stage escalation notifies with WHO reached out + the owner-facing
+    escalation_note; the private_rationale goes to the audit log, not the headline."""
+    result, captured = _run_escalate(
+        {
+            "counterparty_name": "Maya Chen",
+            "decision": {
+                "action": "escalate",
+                "escalation_note": "They are asking for the roof age and service records.",
+                "private_rationale": "internal reasoning, audit only",
+            },
+        },
+        monkeypatch,
+    )
+    assert result["outcome"] == "escalated"
+    assert captured["reason"] == (
+        "Maya Chen has reached out. They are asking for the roof age and service records."
+    )
+    assert captured["private_rationale"] == "internal reasoning, audit only"
+
+
+def test_escalate_gate_error_beats_note_and_stale_reason(monkeypatch):
+    _, captured = _run_escalate(
+        {
+            "counterparty_name": "Maya Chen",
+            "gate_error": "output: leaked a private limit",
+            "escalation_reason": "stale screen rationale that must not surface",
+            "decision": {"action": "inform", "escalation_note": "note"},
+        },
+        monkeypatch,
+    )
+    assert captured["reason"] == "Maya Chen has reached out. output: leaked a private limit"
+
+
+def test_escalate_falls_back_without_name_or_note(monkeypatch):
+    _, captured = _run_escalate({}, monkeypatch)
+    assert captured["reason"] == "The counterparty has reached out. Your reply is needed."
