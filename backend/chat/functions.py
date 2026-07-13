@@ -121,14 +121,20 @@ async def thread_inbound(ctx: inngest.Context) -> dict:
     # pressing again while the principal is away → hand to the human, don't farm another
     # reply (architecture §5; caps the bounded loop at the principal's own N).
     if await sync_to_async(svc.reply_cap_reached)(chat_id, principal_id):
+        who = plan.get("counterparty_name") or "The counterparty"
         await sync_to_async(svc.escalate)(
-            chat_id, principal_id, "counterparty messaged again; agent already at its reply cap"
+            chat_id,
+            principal_id,
+            f"{who} messaged again and your assistant is at its reply cap. Your reply is needed.",
+            private_rationale="counterparty messaged again; agent already at its reply cap",
         )
         return {"outcome": "escalated", "reason": "reply cap"}
 
     from polaris_agent.graphs.responder import run_responder
 
-    final = await run_responder(plan)
+    # trace_meta is Langfuse-only context: the run id groups the duplicate traces an
+    # at-least-once Inngest retry produces (the DB commit gate dedups the real reply).
+    final = await run_responder(plan, trace_meta={"inngest_run_id": getattr(ctx, "run_id", None)})
     outcome = final.get("outcome")
     result = final.get("commit_result") or {}
 

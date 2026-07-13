@@ -37,6 +37,10 @@ anthropic>=0.40
 # ---- Durable orchestration ----
 inngest>=0.4,<0.6                  # Python SDK 0.4/0.5 (Python >=3.10)
 
+# ---- Observability / prompt management ----
+langfuse>=3.0,<4                   # Cloud-hosted prompts + LangGraph tracing
+langchain>=0.3                     # required by langfuse.langchain.CallbackHandler
+
 # ---- Misc ----
 pydantic==2.*
 python-dotenv>=1.0

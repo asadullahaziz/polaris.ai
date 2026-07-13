@@ -80,6 +80,7 @@ class AgentDecision(TypedDict):
     share_comps: bool
     share_valuation: bool
     private_rationale: str  # logged to agent_action_log; NEVER forwarded or posted
+    escalation_note: str  # escalate only: owner-facing "what they need" → notification
 
 
 # STAGE 2 (draft) — PUBLIC-only context in, prose out.
@@ -91,6 +92,7 @@ class ResponderState(TypedDict, total=False):
     # --- identity / routing (all principal-centric; no role/side) ---------------
     principal_id: int  # the away human the agent covers for (the OTHER ChatMember)
     counterparty_user_id: int | None  # the human who sent the inbound
+    counterparty_name: str | None  # their display name → the escalation headline
     chat_id: int
     inbound_message_id: int
     stance: Stance  # ownership-derived; selects assessment + focal mandate

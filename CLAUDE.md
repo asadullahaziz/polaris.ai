@@ -138,6 +138,31 @@ Key design docs (keep these authoritative — update them when a decision change
   temperature for GPT-5-family IDs (they reject it).
 - **Agent framework:** **LangGraph** (copilot · auto-responder turn · outreach fan-out);
   checkpointer = Postgres (`langgraph-checkpoint-postgres`)
+- **Prompts & observability:** **Langfuse Cloud** (added 2026-07-13) — runtime **source of
+  truth for system prompts** (edit/version/label in its UI; `LANGFUSE_PROMPT_LABEL` picks
+  the deployment, default `production`) **+ tracing** of both graphs and the two inline
+  LLM calls. Optional by construction: on iff `LANGFUSE_PUBLIC_KEY`/`SECRET_KEY` are set;
+  keyless (tests, offline dev) everything runs on code fallbacks with **zero network**.
+  Registry = `polaris_agent/prompt_store.py` (shared fragments + composed surfaces via
+  Langfuse composability tags); the constants in `polaris_agent/prompts/__init__.py` are
+  the permanent, parity-tested fallbacks — **changing a prompt in code means updating the
+  constant, then `make sync-prompts --update`** (registry and constants may not drift:
+  `tests/test_prompt_store.py` enforces byte parity). Tracing seams =
+  `polaris_agent/observability.py` (trace names `copilot-turn` / `responder-turn` /
+  `outreach-summary` / `copilot-title`; sessions `copilot:{conv_id}` / `chat:{chat_id}`;
+  a `fallback-prompt` tag doubles as the outage signal). ⚠️ The deterministic guardrails
+  (`disclosure.py` regexes, policy gate, output check) are CODE, never Langfuse prompts —
+  a prompt edit must not be able to weaken the airlock. Live demo iteration:
+  `LANGFUSE_PROMPT_LABEL=latest` + `LANGFUSE_PROMPT_CACHE_TTL=0`; the copilot picks up
+  edits on reconnect (its system prompt composes per WS connection). Server URL:
+  `LANGFUSE_BASE_URL` (preferred; `LANGFUSE_HOST` also accepted) — EU cloud default,
+  US-region projects need `https://us.cloud.langfuse.com`. Known + accepted: traces
+  include the responder's Stage-1 PRIVATE context (mandate floors/ceilings) — same
+  trust domain as the DB, and demo data is fictional; if that changes, the SDK `mask=`
+  hook on the client in `prompt_store.langfuse_client()` is the seam. Prompt↔trace
+  linking = name/version/is_fallback in trace metadata; the native LangChain link
+  needs template-object chains, which would reintroduce the brace-injection hazard
+  around user text (verified vs docs 2026-07-13 — do not "fix" this).
 - **Durable execution / async orchestration:** **Inngest** (events, retries, fan-out, long human waits)
 - **Real-time transport:** **WebSockets** (chat + presence on one socket)
 - **No vector store in v1** — ranking is behavioral-first; revisit only if semantic recall is needed
@@ -180,7 +205,8 @@ backend/                 Django 5.2 ASGI project (one deployable)
   config/                settings (base/dev), asgi.py (ProtocolTypeRouter), urls, lifespan
   accounts/ catalog/ buyers/ matching/ conversations/ outreach/
   agent_context/ notifications/ orchestration/   ← one app per domain (plan §2)
-  polaris_agent/         import-isolated agent pkg: checkpointer, graphs/, tools/, prompts/, models, dal
+  polaris_agent/         import-isolated agent pkg: checkpointer, graphs/, tools/, prompts/,
+                         prompt_store (Langfuse registry+fallbacks), observability (tracing), models, dal
   seed/data/             king_county_sales.csv (P1 seed_kc source)
   tests/                 P0 spike tests (the gate)
 frontend/                Next.js 15 App Router (Tailwind 4, TanStack Query, session+CSRF client)
@@ -212,6 +238,9 @@ docker-compose.yml       5 services, one .env; `docker compose up` = the whole s
   resolvability, property search, copilot plumbing, outreach ledger/fan-out, the commit-gate
   invariant + disclosure gates, P0 spike). 95 passing, 2 skipped (live-LLM smokes).
 - **Migrations / shell / psql / format:** `make migrate` · `make shell` · `make psql` · `make fmt`.
+- **Langfuse prompt sync:** `make sync-prompts` (needs `LANGFUSE_*` keys in `.env`) — idempotent
+  create-if-missing bootstrap of the prompt library; re-runs report drift vs the code registry
+  (`ARGS="--update --promote"` pushes + labels new versions).
 - **Regenerate the typed FE client** (backend must be up): `cd frontend && npm run gen:api`.
 
 > P0 note: DB migrations are generated in-container at boot (Django/GDAL can't run on the

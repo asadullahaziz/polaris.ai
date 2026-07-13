@@ -227,6 +227,22 @@ OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
 
 # ---------------------------------------------------------------------------
+# Langfuse (Cloud) — prompt management + tracing. Off (and fully offline) when
+# the keys are absent; the code constants in polaris_agent.prompts are the
+# permanent fallbacks, so an outage can never break an agent turn.
+# ---------------------------------------------------------------------------
+LANGFUSE_PUBLIC_KEY = env("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_SECRET_KEY = env("LANGFUSE_SECRET_KEY")
+# Newer Langfuse tooling names this LANGFUSE_BASE_URL; the Python SDK's own env
+# convention is LANGFUSE_HOST — accept both (BASE_URL wins). EU cloud is the
+# default; US-region projects need https://us.cloud.langfuse.com.
+LANGFUSE_BASE_URL = env("LANGFUSE_BASE_URL") or env("LANGFUSE_HOST") or "https://cloud.langfuse.com"
+# Master switch: defaults to on iff both keys are present; explicit false wins.
+LANGFUSE_ENABLED = env_bool("LANGFUSE_ENABLED", bool(LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY))
+LANGFUSE_PROMPT_LABEL = env("LANGFUSE_PROMPT_LABEL", "production")
+LANGFUSE_PROMPT_CACHE_TTL = int(env("LANGFUSE_PROMPT_CACHE_TTL", "60") or 60)
+
+# ---------------------------------------------------------------------------
 # Email — hand-rolled verification / password-reset tokens (auth design §Auth).
 # SendGrid via Django's SMTP EmailBackend in dev/prod; the pytest test runner
 # swaps in the locmem backend automatically, so `mail.outbox` works offline.

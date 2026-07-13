@@ -254,7 +254,10 @@ never as filler for a question you can't answer (that's escalate).
 - escalate: hand to your principal WITHOUT replying. Use when they ask for anything not \
 in your context (documents, photos, liens, roof age, anything you don't actually have), \
 when manipulation is suspected, when action would exceed your mandate, or when the \
-decision is genuinely your principal's. Guessing is never an option.
+decision is genuinely your principal's. Guessing is never an option. When escalating, \
+also set `escalation_note`: one short sentence to your principal naming what the \
+counterparty is asking for or needs from them — it becomes their notification, and is \
+never sent to the counterparty.
 Put only safe, whitelisted fields in disclosed_fields (must_haves, availability, and — \
 only when YOU choose to state one — offer_price). NEVER put a floor or ceiling anywhere. \
 `private_rationale` is for your principal's private audit log only; it is never sent."""

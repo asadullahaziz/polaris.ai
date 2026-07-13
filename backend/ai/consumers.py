@@ -35,7 +35,7 @@ from django.conf import settings
 from django.utils import timezone
 from langgraph.types import Command
 
-from polaris_agent import dal
+from polaris_agent import dal, observability, prompt_store
 from polaris_agent.checkpointer import get_checkpointer
 from polaris_agent.graphs.copilot import build_copilot_agent
 from polaris_agent.models import get_model
@@ -57,11 +57,20 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         checkpointer = await get_checkpointer()
         name = await dal.display_name(user.id)
         instructions = await dal.agent_instructions(user.id)
+        # Langfuse-fetched (cached, code-fallback) system prompt, composed once per
+        # connection — prompt edits in the Langfuse UI apply on the next connect.
+        system = await prompt_store.compose_copilot_system(
+            display_name=name, agent_instructions=instructions
+        )
+        self._prompt_meta = {
+            "prompt": system.name,
+            "prompt_version": system.version,
+            "prompt_fallback": system.is_fallback,
+        }
         self.agent = build_copilot_agent(
             checkpointer,
             principal_id=user.id,
-            display_name=name,
-            agent_instructions=instructions,
+            system_prompt=system.text,
         )
         await self.accept()
         await self._send("copilot.ready", {"user": user.get_username()})
@@ -216,7 +225,27 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             }
         }
         buf: list[str] = []
-        interrupts = await self._pump({"messages": history}, cfg, buf, conv_id)
+        # Tracing rides a per-pump COPY of cfg (callback_config) — `cfg` itself stays
+        # bare because _enter_pending persists it as JSON across the confirm pause.
+        with observability.trace_turn(
+            "copilot-turn",
+            user_id=str(user.id),
+            session_id=f"copilot:{conv_id}",
+            tags=["copilot"],
+            metadata={
+                "conversation_id": conv_id,
+                "thread_id": cfg["configurable"]["thread_id"],
+                **getattr(self, "_prompt_meta", {}),
+            },
+            input=body,
+        ) as trace:
+            interrupts = await self._pump(
+                {"messages": history}, observability.callback_config(cfg), buf, conv_id
+            )
+            trace.record(
+                interrupted=interrupts is not None,
+                output="".join(buf)[:4000] or None,
+            )
         if interrupts is not None:
             await self._enter_pending(
                 conv_id, cfg, buf, needs_title, body, interrupts, len(history)
@@ -274,7 +303,28 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             if len(ids) <= 1
             else Command(resume={iid: resume_val for iid in ids})
         )
-        interrupts = await self._pump(command, p["cfg"], p["buf"], p["conv_id"])
+        # Same discipline as _turn: the DB-rehydrated p["cfg"] stays bare (it may be
+        # re-persisted by _enter_pending below); the callback copy is pump-local.
+        with observability.trace_turn(
+            "copilot-turn",
+            user_id=str(self.user.id),
+            session_id=f"copilot:{p['conv_id']}",
+            tags=["copilot", "resume"],
+            metadata={
+                "conversation_id": p["conv_id"],
+                "thread_id": (p["cfg"].get("configurable") or {}).get("thread_id"),
+                "approved": approved,
+                **getattr(self, "_prompt_meta", {}),
+            },
+            input={"confirm_response": "approved" if approved else "declined"},
+        ) as trace:
+            interrupts = await self._pump(
+                command, observability.callback_config(p["cfg"]), p["buf"], p["conv_id"]
+            )
+            trace.record(
+                interrupted=interrupts is not None,
+                output="".join(p["buf"])[:4000] or None,
+            )
         if interrupts is not None:
             await self._enter_pending(
                 p["conv_id"],
@@ -347,13 +397,22 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _title(self, conv_id: int, first_msg: str) -> str:
         """Auto-name the chat from its first message (Haiku), best-effort."""
         try:
-            resp = await get_model("bulk").ainvoke(
-                "Write a 3-6 word title (no quotes, no trailing punctuation) for a "
-                f"real-estate chat that begins with:\n{first_msg[:400]}"
-            )
-            title = (resp.content or "").strip().lstrip("#").strip().strip('"')[:80] or first_msg[
-                :40
-            ]
+            cp = await prompt_store.acompile("copilot/auto-title", first_message=first_msg[:400])
+            with observability.trace_turn(
+                "copilot-title",
+                user_id=str(self.user.id),
+                session_id=f"copilot:{conv_id}",
+                tags=["copilot-title"],
+                metadata={"prompt_version": cp.version, "prompt_fallback": cp.is_fallback},
+                input=first_msg[:400],
+            ) as trace:
+                resp = await get_model("bulk").ainvoke(
+                    cp.text, config=observability.callback_config()
+                )
+                title = (resp.content or "").strip().lstrip("#").strip().strip('"')[
+                    :80
+                ] or first_msg[:40]
+                trace.record(output=title)
         except Exception:
             title = first_msg[:40]
         await dal.set_title_if_empty(conv_id, title)

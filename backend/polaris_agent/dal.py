@@ -218,7 +218,6 @@ def _save_turn_blocks(ai_chat_id: int, messages: list) -> int | None:
     from django.utils import timezone
 
     from ai.models import AiChat, AiMessage
-
     from polaris_agent.tools.labels import tool_label
 
     last_text_id: int | None = None
@@ -227,7 +226,11 @@ def _save_turn_blocks(ai_chat_id: int, messages: list) -> int | None:
             if isinstance(m, AIMessage):
                 text = _text_content(m.content)
                 calls = [
-                    {"id": c.get("id") or "", "name": c.get("name") or "", "args": c.get("args") or {}}
+                    {
+                        "id": c.get("id") or "",
+                        "name": c.get("name") or "",
+                        "args": c.get("args") or {},
+                    }
                     for c in (m.tool_calls or [])
                 ]
                 if not text and not calls:
@@ -939,9 +942,7 @@ def _list_chats(
     return out[:limit]
 
 
-def _preview_message_sends(
-    principal_id: int, user_ids: list[int], listing_ids: list[int]
-) -> dict:
+def _preview_message_sends(principal_id: int, user_ids: list[int], listing_ids: list[int]) -> dict:
     """Recipient + attachment validation for the confirm card. Read-only (safe to re-run
     on an interrupt resume). Resolves each valid recipient's display name and whether the
     send OPENS a new chat (no pair chat yet); a user_id missing from `recipients` is
@@ -1292,6 +1293,7 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
         **deal_ctx,
         "principal_id": principal_id,
         "counterparty_user_id": counterparty_user_id,
+        "counterparty_name": _display_name(counterparty_user_id),
         "chat_id": chat_id,
         "inbound_message_id": inbound_message_id,
         "inbound": inbound,

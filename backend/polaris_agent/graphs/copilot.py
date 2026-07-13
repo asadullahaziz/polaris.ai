@@ -17,7 +17,6 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.prebuilt import create_react_agent
 
 from polaris_agent.models import get_model
-from polaris_agent.prompts import copilot_system_prompt
 from polaris_agent.tools.registry import tools_for
 
 
@@ -25,14 +24,15 @@ def build_copilot_agent(
     checkpointer: BaseCheckpointSaver,
     *,
     principal_id: int,
-    display_name: str | None = None,
-    agent_instructions: str | None = None,
+    system_prompt: str,
 ):
+    """`system_prompt` arrives pre-composed (prompt_store.compose_copilot_system —
+    Langfuse-fetched with the code constants as fallback) so the graph layer stays
+    free of prompt fetching; the tools stay principal-bound closures (the security
+    seam — a tool call can never touch another user's data)."""
     return create_react_agent(
         model=get_model("workhorse"),
         tools=tools_for("copilot", principal_id),
-        prompt=copilot_system_prompt(
-            display_name=display_name, agent_instructions=agent_instructions
-        ),
+        prompt=system_prompt,
         checkpointer=checkpointer,
     )
