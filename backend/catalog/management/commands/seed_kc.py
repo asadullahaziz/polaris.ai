@@ -12,7 +12,17 @@ credible; the identity layer (town names, street addresses) is synthetic.
   * ~40 investor personas (25 history-only + 15 with buy-box + mandate) built from
     ARCHETYPES that deliberately vary the ranking features (bought-in-area, volume,
     recency, price band, cash, strategy) so `rank_buyers` shows a real spread.
-  * ~15 active listings under 3 sellers, priced below market for wholesale spread.
+    Every persona carries prose (bio/company/agent_instructions) from _seed_content,
+    so live agent behavior is anchored to inspectable instructions.
+  * ~15 active listings under 3 sellers, priced below market for wholesale spread,
+    each with an attribute-composed description + an enriched seller mandate.
+  * **The hero path:** kc_seller_1 owns a flagship listing whose asking price is
+    calibrated at seed time to margin HERO_TARGET_MARGIN against the live comp ARV,
+    so kc_buyer_1..4 (all cluster 0) deterministically diverge on it — qualify /
+    hold / decline / gate-impasse — purely by strategy threshold + mandate ceiling.
+  * **Pre-warm:** one closed deal (kc_seller_1 × kc_buyer_3) + one stale outreach
+    thread, seeded through the pure-sync chat/deals services and backdated, so
+    /deals and the inbox look lived-in from the first frame.
 
 Two hard requirements:
   * **Date rebase (§4.4):** the source sale window is linearly remapped onto the last
@@ -51,6 +61,10 @@ from catalog.models import (
     Sale,
 )
 from catalog.services import normalize_address
+from matching.engine import WHOLESALE_FEE, _est_rehab, estimate_value
+from users.models import UserProfile
+
+from . import _seed_content as content
 
 SEED_SOURCE = "seed_kc"
 COUNTY_FIPS = "53033"  # engine keys comps off this; the fictional identity is naming-only
@@ -64,6 +78,34 @@ N_PROSPECTS = 25  # ex-prospects, now registered users with history only
 N_SELLERS = 3
 N_LISTINGS = 15
 LISTING_DISCOUNT = Decimal("0.80")  # asking below market → wholesale spread
+
+# The hero path: the flagship's asking is derived from its seed-time comp ARV so its
+# margin lands dead center between buy_hold's .10 threshold and brrrr's .15 — which is
+# also fix_flip's decline boundary (.20 − hold band .05). One listing, four verdicts.
+HERO_TARGET_MARGIN = 0.125
+N_HERO_BUYERS = len(content.HERO_BUYERS)  # kc_buyer_1..4, all in cluster 0
+
+# Listing ownership: (seller_idx, cluster_idx) per listing. kc_seller_1 (the hero
+# seller the demo logs in as) owns the first five: the flagship (0), the pre-warm
+# closed-deal fixer (1), the pre-warm stale-thread listing (2), plus two for variety.
+SELLER_LISTING_PLAN = [
+    (0, 0),  # 0: flagship — calibrated asking (see _pick_flagship)
+    (0, 0),  # 1: cluster-0 fixer — the pre-warm closed deal (kc_buyer_3 flipped it)
+    (0, 2),  # 2: the pre-warm stale outreach thread (kc_prospect_3's home cluster)
+    (0, 1),
+    (0, 3),
+    (1, 4),
+    (1, 5),
+    (1, 1),
+    (1, 6),
+    (1, 7),
+    (2, 2),
+    (2, 3),
+    (2, 6),
+    (2, 7),
+    (2, 5),
+]
+CLOSE_DAYS_CYCLE = [21, 14, 30]  # per-listing close preference (index-keyed, RNG-free)
 
 STRATEGIES = ["fix_flip", "buy_hold", "brrrr"]
 DISPOSITION_BY_STRATEGY = {"fix_flip": "flip", "buy_hold": "hold", "brrrr": "brrrr"}
@@ -236,6 +278,12 @@ def _f(v):
 def _pct(prices: list[float], frac: float) -> float:
     """Percentile by index over a pre-sorted price list."""
     return prices[min(len(prices) - 1, int(len(prices) * frac))]
+
+
+def _town_of(address_raw: str) -> str:
+    """The town token of a seeded address ('{no} {street}, {town}, WA {zip}')."""
+    parts = address_raw.split(",")
+    return parts[1].strip() if len(parts) >= 2 else TOWN_FALLBACK
 
 
 class Command(BaseCommand):
@@ -427,10 +475,51 @@ class Command(BaseCommand):
         self.stdout.write(f"properties: {after} total ({after - before} newly inserted)")
 
     # ---- personas (users), sales, buy-boxes, listings ------------------------
+    # ---- the flagship (hero-path anchor) --------------------------------------
+    def _pick_flagship(self, clusters: list[dict]) -> dict:
+        """Deterministically pick the hero listing's property in cluster 0 and
+        calibrate its asking from the LIVE comp ARV: asking = ARV·(1−M) − rehab − fee,
+        so assess_deal's margin lands at HERO_TARGET_MARGIN for every strategy and the
+        hero buyers' verdicts diverge by threshold alone. RNG-free: first apn-ordered
+        candidate wins. Runs before the buyer loop — hero mandate ceilings derive from
+        the flagship's asking/floor."""
+        rows = clusters[0]["rows"]  # already apn-sorted
+
+        def _candidates(conditions: set[int]):
+            for r in rows:
+                if (
+                    _i(r["condition"]) in conditions
+                    and (_i(r["bedrooms"]) or 0) >= 3
+                    and 1400 <= (_i(r["sqft_living"]) or 0) <= 2200
+                    and (_i(r["yr_built"]) or 9999) < 1990
+                ):
+                    yield r
+
+        # Condition 3 first: 1.0 strategy-fit for every strategy, and its $25/sqft
+        # rehab keeps the margin story legible. Relax to 2-3 before failing loudly.
+        for conditions in ({3}, {2, 3}):
+            for r in _candidates(conditions):
+                prop = Property.objects.get(pk=r["_pk"])
+                val = estimate_value(prop, arv=True)
+                arv = val["point"]
+                if arv is None or not val["basis"]["met_min_n"]:
+                    continue
+                rehab = _est_rehab(prop.condition, prop.sqft)
+                if rehab is None:
+                    continue
+                asking = round((arv * (1 - HERO_TARGET_MARGIN) - rehab - WHOLESALE_FEE) / 1000)
+                asking *= 1000
+                if asking <= 0:
+                    continue
+                floor = round(asking * 0.95 / 1000) * 1000
+                return {"row": r, "prop": prop, "arv": arv, "asking": asking, "floor": floor}
+        raise CommandError("no flagship candidate in cluster 0 — the hero path cannot be built")
+
     @transaction.atomic
     def _seed_behavioral(self, clusters: list[dict], User) -> None:
         sales: list[Sale] = []
         today = timezone.now().date()
+        flagship = self._pick_flagship(clusters)
 
         def sample_sales(cluster, archetype: dict, strategy: str, buyer) -> None:
             """Sample the archetype's slice of the town: price sub-band ∩ recency
@@ -466,9 +555,12 @@ class Command(BaseCommand):
                 )
 
         # ~25 ex-prospect users — history only, rank on pure behavior (no buy-box).
+        # Profile texture only (bio/company); no agent_instructions — they are extras,
+        # not demo drivers.
         for i in range(N_PROSPECTS):
             cluster = clusters[i % len(clusters)]
-            archetype = ARCHETYPES[PROSPECT_ROUNDS[(i // len(clusters)) % len(PROSPECT_ROUNDS)]]
+            arch_key = PROSPECT_ROUNDS[(i // len(clusters)) % len(PROSPECT_ROUNDS)]
+            archetype = ARCHETYPES[arch_key]
             strategy = archetype["strategy"] or STRATEGIES[i % len(STRATEGIES)]
             u = User.objects.create_user(
                 email=f"kc_prospect_{i + 1}@polaris.local",
@@ -476,33 +568,65 @@ class Command(BaseCommand):
                 full_name=PROSPECT_NAMES[i % len(PROSPECT_NAMES)],
                 is_email_verified=True,
             )
+            persona = content.buyer_persona(arch_key, u.full_name, cluster["town"])
+            UserProfile.objects.filter(user=u).update(
+                bio=persona["bio"], company=persona["company"]
+            )
             sample_sales(cluster, archetype, strategy, buyer=u)
 
-        # ~15 registered buyers — history + buy-box + mandate. Round 0 = the town's
+        # ~15 registered buyers — history + buy-box + mandate. The first four are the
+        # HERO COHORT: all in cluster 0 so every one ranks for the flagship, with
+        # strategies/ceilings engineered to diverge on it (see content.HERO_BUYERS).
+        # The rest keep the classic rounds over clusters 1..7: round 0 = the town's
         # anchor flipper (top of the ranked table); round 1 = lapsed/out-of-towner
-        # (bottom of it), so registered demo users bracket the spread.
+        # (bottom of it), so registered demo users still bracket the spread.
         for i in range(N_REGISTERED):
-            cluster = clusters[i % len(clusters)]
-            if i // len(clusters) == 0:
-                arch_key = "anchor_flipper"
+            spec = content.HERO_BUYERS[i] if i < N_HERO_BUYERS else None
+            if spec is not None:
+                cluster_idx = 0
+                arch_key = spec["arch_key"]
+                archetype = ARCHETYPES[arch_key]
+                strategy = spec["strategy"]
             else:
-                arch_key = BUYER_ROUND_1[(i % len(clusters)) % len(BUYER_ROUND_1)]
-            archetype = ARCHETYPES[arch_key]
-            strategy = archetype["strategy"] or STRATEGIES[i % len(STRATEGIES)]
+                j = i - N_HERO_BUYERS
+                cluster_idx = 1 + j % (len(clusters) - 1)
+                arch_key = (
+                    "anchor_flipper"
+                    if j < len(clusters) - 1
+                    else BUYER_ROUND_1[j % len(BUYER_ROUND_1)]
+                )
+                archetype = ARCHETYPES[arch_key]
+                strategy = archetype["strategy"] or STRATEGIES[i % len(STRATEGIES)]
+            cluster = clusters[cluster_idx]
             u = User.objects.create_user(
                 email=f"kc_buyer_{i + 1}@polaris.local",
                 password=SEED_PASSWORD,
                 full_name=BUYER_NAMES[i % len(BUYER_NAMES)],
                 is_email_verified=True,
             )
+            persona = content.buyer_persona(arch_key, u.full_name, cluster["town"])
+            UserProfile.objects.filter(user=u).update(
+                bio=persona["bio"],
+                company=persona["company"],
+                agent_instructions=persona["agent_instructions"],
+            )
             # Out-of-towners buy in the NEIGHBORING town; everyone else at home.
             sales_cluster = (
-                clusters[(i + 1) % len(clusters)] if arch_key == "out_of_towner" else cluster
+                clusters[(cluster_idx + 1) % len(clusters)]
+                if arch_key == "out_of_towner"
+                else cluster
             )
             sample_sales(sales_cluster, archetype, strategy, buyer=u)
             lon, lat = cluster["centroid"]
-            box_lo = _pct(cluster["prices"], archetype["band"][0])
-            box_hi = _pct(cluster["prices"], archetype["band"][1])
+            if spec is not None:
+                # Bracket the flagship's calibrated asking so price-band fit is real.
+                box_lo, box_hi = flagship["asking"] * 0.75, flagship["asking"] * 1.2
+                funding, close_days = spec["funding"], spec["close_days"]
+            else:
+                box_lo = _pct(cluster["prices"], archetype["band"][0]) * 0.9
+                box_hi = _pct(cluster["prices"], archetype["band"][1]) * 1.1
+                funding = "cash" if strategy == "fix_flip" else "hard_money"
+                close_days = self.rng.choice([14, 21, 30])
             box = BuyBox.objects.create(
                 buyer=u,
                 name=f"{cluster['town']} {strategy}",
@@ -510,15 +634,15 @@ class Command(BaseCommand):
                 is_active=True,
                 source="manual",
                 strategy=strategy,
-                price_min=_q2(box_lo * 0.9),
-                price_max=_q2(box_hi * 1.1),
+                price_min=_q2(box_lo),
+                price_max=_q2(box_hi),
                 beds_min=2,
                 sqft_min=800,
                 property_types=["sfr"],
                 condition_levels=CONDITION_LEVELS_BY_STRATEGY[strategy],
                 target_metrics=TARGET_METRICS_BY_STRATEGY[strategy],
-                funding_type="cash" if strategy == "fix_flip" else "hard_money",
-                close_days=self.rng.choice([14, 21, 30]),
+                funding_type=funding,
+                close_days=close_days,
             )
             BuyBoxGeo.objects.create(
                 buy_box=box,
@@ -527,13 +651,23 @@ class Command(BaseCommand):
                 center=Point(lon, lat, srid=4326),
                 radius_mi=Decimal("5.0"),
             )
+            if spec is not None:
+                base, factor = spec["ceiling"]
+                if base == "asking":
+                    ceiling = _q2(flagship["asking"] * factor)
+                elif base == "floor":
+                    ceiling = _q2(flagship["floor"] * factor)
+                else:
+                    ceiling = box.price_max
+            else:
+                ceiling = box.price_max
+            mc = content.buyer_mandate_content(arch_key, cluster["town"])
             Mandate.objects.create(
                 buy_box=box,
-                ceiling_price=box.price_max,
-                instructions=(
-                    f"Screening {strategy} deals in {cluster['town']} ({cluster['zip']}). "
-                    "Qualify strong spreads, ask for missing info, hold borderline."
-                ),
+                ceiling_price=ceiling,
+                instructions=mc["instructions"],
+                must_haves=mc["must_haves"],
+                availability_window=mc["availability_window"],
             )
 
         Sale.objects.bulk_create(sales, batch_size=1000)
@@ -548,20 +682,49 @@ class Command(BaseCommand):
             )
             for s in range(N_SELLERS)
         ]
-        used_pks: set[int] = set()
-        made = 0
-        for i in range(N_LISTINGS):
-            cluster = clusters[i % len(clusters)]
-            candidates = [r for r in cluster["rows"] if r["_pk"] not in used_pks]
-            if not candidates:
-                continue
-            r = self.rng.choice(candidates)
-            used_pks.add(r["_pk"])
-            prop = Property.objects.get(pk=r["_pk"])
-            asking = _q2(float(prop.last_sale_price) * float(LISTING_DISCOUNT))
+        for s, u in enumerate(sellers):
+            persona = content.SELLER_PERSONAS[s % len(content.SELLER_PERSONAS)]
+            UserProfile.objects.filter(user=u).update(
+                bio=persona["bio"],
+                company=persona["company"],
+                agent_instructions=persona["agent_instructions"],
+            )
+
+        def _pick_fixer(rows: list[dict], used: set[int]) -> dict | None:
+            """First apn-ordered cluster row that reads as a flip (condition ≤ 2) —
+            the pre-warm closed deal wants a property coherent with a flipper buyer."""
+            for r in rows:
+                if r["_pk"] in used:
+                    continue
+                cond = _i(r["condition"])
+                if cond is not None and cond <= 2 and (_i(r["bedrooms"]) or 0) >= 2:
+                    return r
+            return None
+
+        used_pks: set[int] = {flagship["row"]["_pk"]}
+        listings: list[Listing] = []
+        for i, (seller_idx, cluster_idx) in enumerate(SELLER_LISTING_PLAN):
+            cluster = clusters[cluster_idx]
+            if i == 0:
+                r, prop = flagship["row"], flagship["prop"]
+                asking = _q2(flagship["asking"])
+            else:
+                candidates = [c for c in cluster["rows"] if c["_pk"] not in used_pks]
+                if not candidates:
+                    continue
+                r = (_pick_fixer(cluster["rows"], used_pks) if i == 1 else None) or self.rng.choice(
+                    candidates
+                )
+                used_pks.add(r["_pk"])
+                prop = Property.objects.get(pk=r["_pk"])
+                asking = _q2(float(prop.last_sale_price) * float(LISTING_DISCOUNT))
+            close_days = CLOSE_DAYS_CYCLE[i % len(CLOSE_DAYS_CYCLE)]
             listing = Listing.objects.create(
-                seller=sellers[i % len(sellers)],
+                seller=sellers[seller_idx],
                 title=prop.address_raw,
+                description=content.compose_description(
+                    prop, cluster["town"], close_days=close_days, variant=i
+                ),
                 asking_price=asking,
                 bundle_type="single",
                 status="active",
@@ -569,16 +732,110 @@ class Command(BaseCommand):
             ListingProperty.objects.create(
                 listing=listing, property=prop, asking_price=asking, sort_order=0
             )
+            floor = _q2(flagship["floor"]) if i == 0 else _q2(float(asking) * 0.95)
+            sm = content.SELLER_MANDATES[seller_idx % len(content.SELLER_MANDATES)]
             Mandate.objects.create(
                 listing=listing,
-                floor_price=_q2(float(asking) * 0.95),
-                instructions=(
-                    f"Dispo {prop.address_raw}. Asking ${asking:,.0f}. "
-                    "Surface qualified cash buyers; don't go below floor."
-                ),
+                floor_price=floor,
+                instructions=sm["instructions"],
+                must_haves=sm["must_haves"],
+                availability_window=sm["availability_window"],
             )
-            made += 1
-        self.stdout.write(f"listings: {made} active under {len(sellers)} sellers")
+            listings.append(listing)
+        self.stdout.write(f"listings: {len(listings)} active under {len(sellers)} sellers")
+
+        self._prewarm(sellers, listings, User)
+
+    # ---- pre-warm: a light lived-in history ------------------------------------
+    def _prewarm(self, sellers: list, listings: list[Listing], User) -> None:
+        """Seed interaction history through the pure-sync service layer (no Inngest/WS
+        side effects): one CLOSED deal with a real transcript (the hero seller ×
+        kc_buyer_3, the flipper — which also lights rank_buyers' relationship weight
+        on the flagship) and one STALE contacted thread that never got an answer.
+        Timestamps are backdated relative to now, the same regime as the date rebase."""
+        if len(listings) < 3:
+            return
+        from chat import services as chat_svc
+        from chat.models import Chat, Message
+        from deals import service as deal_svc
+        from deals.models import Deal
+
+        walt = sellers[0]
+        sofia = User.objects.get(email="kc_buyer_3@polaris.local")
+        prospect = User.objects.get(email="kc_prospect_3@polaris.local")
+        l2, l3 = listings[1], listings[2]
+        prop2 = l2.listingproperty_set.order_by("sort_order").first().property
+        prop3 = l3.listingproperty_set.order_by("sort_order").first().property
+        # The one deliberately disclosed figure; clears the listing's 0.95 floor.
+        offer = round(float(l2.asking_price) * 0.97 / 1000) * 1000
+
+        # A. The closed deal — pitch → cash reply → propose → verbal accept → closed.
+        chat, _ = chat_svc.get_or_create_chat(walt.id, sofia.id)
+        ctx = {
+            "address": prop2.address_raw,
+            "beds": prop2.beds or 3,
+            "offer": f"${offer:,}",
+            "town": _town_of(prop2.address_raw),
+        }
+        deal = None
+        msg_ids: list[int] = []
+        for idx, (kind, action, tpl) in enumerate(content.PREWARM["closed"]):
+            body = tpl.format(**ctx)
+            if kind == "agent":
+                res = chat_svc.post_agent_message(
+                    chat.id,
+                    walt.id,
+                    body,
+                    attachment_listing_ids=[l2.id] if idx == 0 else None,
+                    dedup_key=f"seed:prewarm:closed:{l2.id}:{idx}",
+                    action=action,
+                )
+            else:
+                res = chat_svc.post_human_message(
+                    chat.id, sofia.id, body, client_dedup_uuid=f"seed-prewarm-{l2.id}-{idx}"
+                )
+            msg_ids.append(res["id"])
+            if idx == 2:  # the propose names the figure → /deals shows a standing offer
+                deal = Deal.objects.get(listing=l2, buyer=sofia)
+                # record_disclosed_offer is agent-path-only elsewhere; the pre-warm
+                # uses it as an authoring shortcut for the deal card's offer column.
+                deal_svc.record_disclosed_offer(deal, by_user_id=walt.id, price=offer)
+                deal_svc.advance_stage(deal, "negotiating")
+            elif idx == 3:
+                deal.agreed_price = offer
+                deal.save(update_fields=["agreed_price", "updated_at"])
+                deal_svc.advance_stage(deal, "agreed")
+        deal_svc.set_stage_manual(deal, "closed")  # closed is manual-only by design
+        chat_svc.mark_read(chat.id, walt.id)
+        chat_svc.mark_read(chat.id, sofia.id)
+
+        # B. The stale thread — one opener, never answered; sits at `contacted`.
+        chat2, _ = chat_svc.get_or_create_chat(walt.id, prospect.id)
+        chat_svc.post_agent_message(
+            chat2.id,
+            walt.id,
+            content.PREWARM["stale"].format(address=prop3.address_raw, beds=prop3.beds or 3),
+            attachment_listing_ids=[l3.id],
+            dedup_key=f"seed:prewarm:stale:{l3.id}",
+            action="inform",
+        )
+        chat_svc.mark_read(chat2.id, walt.id)
+
+        # C. Backdate (fixed day offsets → deterministic per rebuild).
+        now = timezone.now()
+        for mid, days in zip(msg_ids, [9, 8, 7, 7, 6]):
+            ts = now - dt.timedelta(days=days)
+            Message.objects.filter(id=mid).update(created_at=ts, sent_at=ts)
+        stale_ts = now - dt.timedelta(days=6)
+        Message.objects.filter(chat_id=chat2.id).update(created_at=stale_ts, sent_at=stale_ts)
+        Chat.objects.filter(id__in=[chat.id, chat2.id]).update(updated_at=stale_ts)
+        Deal.objects.filter(listing=l2, buyer=sofia).update(
+            created_at=now - dt.timedelta(days=9), stage_changed_at=stale_ts, updated_at=stale_ts
+        )
+        Deal.objects.filter(listing=l3, buyer=prospect).update(
+            created_at=stale_ts, stage_changed_at=stale_ts, updated_at=stale_ts
+        )
+        self.stdout.write("prewarm: 1 closed deal + 1 stale thread (backdated)")
 
     def _summary(self) -> None:
         User = get_user_model()
@@ -613,12 +870,50 @@ class Command(BaseCommand):
                 "  logins:   kc_seller_1@polaris.local / kc_buyer_1@polaris.local "
                 f"(password {SEED_PASSWORD}); demo / demo12345"
             )
+        # The hero path (DB-derived, so it prints on the sentinel-skip path too).
+        walt = User.objects.filter(email="kc_seller_1@polaris.local").first()
+        flag = (
+            Listing.objects.filter(seller=walt, status="active").order_by("id").first()
+            if walt
+            else None
+        )
+        if flag is not None:
+            lp = flag.listingproperty_set.order_by("sort_order").first()
+            mandate = Mandate.objects.filter(listing=flag).first()
+            floor = mandate.floor_price if mandate else None
+            self.stdout.write("\n── hero path ──")
+            self.stdout.write(
+                f"  flagship: {lp.property.address_raw if lp else flag.title} "
+                f"(listing #{flag.id}) — asking ${flag.asking_price:,.0f}"
+                + (f", floor ${floor:,.0f}" if floor is not None else "")
+            )
+            for i, spec in enumerate(content.HERO_BUYERS):
+                self.stdout.write(
+                    f"  kc_buyer_{i + 1} ({spec['strategy']}): {spec['expected']}"
+                )
+            self.stdout.write(
+                "  prewarm:  closed deal kc_seller_1 × kc_buyer_3; "
+                "stale thread kc_seller_1 × kc_prospect_3"
+            )
 
     # ---- reset ----------------------------------------------------------------
     def _reset(self) -> None:
         User = get_user_model()
         # Order matters: clear PROTECT references before their targets.
         Sale.objects.filter(source=SEED_SOURCE).delete()
+        # Message.sender is PROTECT: any chat a kc_ user is a member of (the pre-warm
+        # transcripts, plus anything a live demo session produced) must be deleted
+        # BEFORE the users, or User.delete() raises ProtectedError. Deleting the Chat
+        # cascades members/messages/attachments; Deal.chat is SET_NULL and deals
+        # themselves cascade with their listing/users below.
+        from chat.models import Chat, ChatMember
+
+        seed_chat_ids = set(
+            ChatMember.objects.filter(user__email__startswith="kc_").values_list(
+                "chat_id", flat=True
+            )
+        )
+        Chat.objects.filter(id__in=seed_chat_ids).delete()
         # Any listing that attaches a seed (county) property must be deleted before the
         # properties themselves — ListingProperty.property is PROTECT. This includes
         # listings created during a demo session under a non-seed seller (e.g. `demo`);
