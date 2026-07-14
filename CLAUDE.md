@@ -1,247 +1,68 @@
 # CLAUDE.md
 
-Guidance for Claude Code (and other AI assistants) when working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Critical Persona & Behavioral Guidelines
-You are too agreeable by default. I want you objective. I want a partner. Not a sycophant.
-Only agree with me if its rooted in truth.  
+## Working style
 
-## What this project is
+Be an objective partner, not a sycophant: push back when something is wrong; agree only when it's rooted in truth. Surface inconsistencies and resolve them before building on top of them.
 
-**Polaris AI** is an online, AI-powered property and real estate portal for buying and
-selling property, connecting **buyers** and **sellers**. Its centerpiece is **Polaris
-AI** — an AI real estate agent **and** copilot that both *does the work* for either side
-(agent mode: research, listing, buyer matching, outreach, communication) and *assists in
-real time* (copilot mode: answering questions, drafting messages/outreach, and
-context-aware deal coaching inside buyer↔seller chat).
+## What this is
 
-Read [`.claude/context/PRODUCT.md`](./.claude/context/PRODUCT.md) for the full product
-definition before making product or architecture decisions. Key domain concepts: Seller,
-Buyer, Listing/Property, Buyer Preferences, Buyer Discovery & Ranking (outreach engine),
-In-App Communication, and Polaris AI (agent mode vs. copilot mode).
+Polaris AI is an AI-powered real-estate portal (POC/MVP) connecting property buyers and sellers. The centerpiece is "Polaris", each user's AI real-estate agent: a copilot chat that does real work through tools (listing intake, valuation, buyer ranking, outreach), and an away assistant that covers the user's human-to-human chats while they're offline — under user-set governance, behind hard disclosure guardrails.
 
-## Current status
-
-> **⚠️ v2 REBUILD — PLAN APPROVED (2026-07-03); P0–P6 BUILT + merged to `main` (95 backend tests green); P6 awaiting user review/demo. Demo data = the Kessler County world (2026-07-05): subsampled fictional towns, universal resolvable addresses, archetype personas, closed-world address autocomplete — see [`DEMO.md`](./DEMO.md).** Per-phase v2 progress lives in the plan doc's as-built ledgers (P2/P3/P5/P6) and the `project-v2-rebuild` memory — trust those, not the v1 "Current status" body below. The status below describes the built **v1** POC (the port-from reference). The v2 direction is a full-web-app rebuild-in-place + port. **Authoritative plan: [`.claude/plans/polaris_ai_v2_revisions_2026-07-03.md`](.claude/plans/polaris_ai_v2_revisions_2026-07-03.md)** (approved revisions; supersede the base [`polaris_ai_v2_implementation_plan.md`](.claude/plans/polaris_ai_v2_implementation_plan.md) where they overlap). Locked v2 changes: registered users only (prospects removed); custom email-login user (+ password reset); fused `conversation` split into human `chat` + `ai` tables; **free-form 1:1 chat — ONE chat per user-pair, listings as message attachments, no `subject_listing`/`author_side`**; the auto-responder is a single **away-assistant chatbot** (user-level enable, role-agnostic airlock); the copilot is a **full agentic assistant** (tools mirror the API, confirm-every-write); governance knobs (`auto_reply_when_away`/`agent_autonomy`/`agent_instructions`) on `UserProfile`; ShadCN frontend. Treat the v1 details below as port-from reference, not the v2 target, until rewritten per-phase.
-
-**Implementation underway — Phases 0–3 built (all three LangGraph graphs).** The design phase
-is closed (product definition, PRD, feature/flow spec, agent architecture, full data model/schema,
-and the system-design review remediation, all under `.claude/`). Execution follows the
-phased plan in [`.claude/plans/implementation_plan.md`](./.claude/plans/implementation_plan.md).
-
-**Phase 0** (scaffolding + one-command bring-up + the hard-seam spike) is built and green.
-
-**Phase 1 (Copilot end-to-end · Graph 1 + the King County seed)** is built:
-- **Schema** — all 18 domain models (`accounts`/`catalog`/`buyers`/`conversations`/`outreach`/
-  `agent_context`/`notifications`), migrations matched 1:1 to the DDL (partial-unique ledgers,
-  CHECK patterns, composite PKs, GiST + functional indexes). Verified in Postgres.
-- **`seed_kc`** — idempotent, date-rebased seed: ~21.4k KC comps + ~40 synthetic personas
-  (25 prospect / 15 registered w/ buy-boxes + mandates) + 15 active listings priced below market.
-  Wired into bring-up (entrypoint) and `make seed`.
-- **Engine** (`matching/engine.py`) — deterministic `get_comps` + `estimate_value` (+ARV) over
-  PostGIS with staged fallback. Unit-tested, no LLM.
-- **Copilot runtime** — `polaris_agent` tools (extract/create-listing/value/comps/mandate/memory),
-  composed prompt fragments, a ReAct graph (`create_react_agent` + shared checkpointer), and the
-  `CopilotConsumer` WS (rehydrate transcript → stream `copilot.token`/`copilot.done` → persist →
-  Haiku auto-title). Provider parity through OpenRouter verified (invoke/structured-output/tools).
-- **REST** — copilot conversations, listings + on-demand `/valuation`, and the shared context
-  store (memory + mandate + preferences).
-- **Frontend** — a copilot chat UI (sidebar, streamed markdown, comp-table rendering) + a right
-  rail for listings/valuation and the shared context editor.
-
-**Phase 2 (Outreach fan-out · Graph 3)** is built:
-- **`rank_buyers`** (`matching/engine.py`) — deterministic, behavioral-first weighted score
-  (bought-in-area .28 / price-band .18 / strategy .15 / recency .12 / volume .10 / cash .07 /
-  relationship .10 + a registered-only buy-box-completeness bonus) with a per-feature breakdown
-  and a human "why this buyer" reason. No LLM; degrades gracefully for prospects.
-- **`outreach/service.py`** — the invariant-bearing, pure-sync core: `launch_outreach` (rank →
-  ledger-dedup → templated per-buyer openers → persist `campaign='awaiting_approval'` +
-  `recipients='pending'` + notification), `approve_campaign`/`cancel_campaign` (batch send-gate),
-  and `send_recipient` (the **ledger guarantee** — skip-if-sent + partial-unique `status='sent'`;
-  opener idempotency via `dedup_key` + ON CONFLICT DO NOTHING; opens the one shared thread).
-- **Inngest fan-out** (`outreach/functions.py`) — `outreach/approved`-triggered async fn: one
-  durable step per recipient (`concurrency`, `retries`), **templated** `outreach.progress` ticks
-  pushed to the seller's copilot chat over the channel layer (no LLM), then **one** narrated
-  summary (templated fallback) persisted + pushed as `outreach.summary`.
-- **Copilot integration** — `launch_outreach` is a real copilot tool (conversation threaded via
-  `RunnableConfig`); `CopilotConsumer` joins group `copilot_{user_id}` and forwards the tick/summary
-  events. Rank/draft/present IS the copilot turn (architecture §6) — no separate outreach LLM graph.
-- **REST** — `/api/outreach/campaigns/` list/detail + `approve`/`cancel` (approve emits the
-  fan-out event via `send_sync`).
-- **Frontend** — an Outreach right-rail tab (ranked shortlist w/ reasons, approve/cancel) + live
-  `outreach.progress`/`outreach.summary` handling in the chat.
-
-**Phase 3 (Auto-responder · Graph 2 — buyer role first, seller role configurable)** is built:
-- **`assess_deal`** (`matching/engine.py`) — deterministic wholesale math over the same comp engine:
-  `spread = ARV − asking − est_rehab − wholesale_fee`, margin vs a strategy threshold →
-  `qualify/hold/decline` + rationale. Missing inputs → **hold and ask**, never a blind decline. No LLM.
-- **Two-stage airlock** (`polaris_agent/graphs/responder.py`) — a `StateGraph`: screen (Haiku
-  injection check) → assess (engine) → **Stage 1 decide** (PRIVATE ctx → CLOSED `AgentDecision`, no
-  floor/ceiling slot) → deterministic **policy gate** → **Stage 2 draft** (PUBLIC-only ctx, mandate
-  NOT in scope) → deterministic **output check** (literal-leak scan) → send gate. Stage 2 can't voice
-  a limit it never held — the airlock is structural. Engine tools called deterministically (collapsed
-  like Graph 3), `role=buyer_agent|seller_agent` swaps a prompt fragment + mandate orientation.
-- **The invariant** (`conversations/responder_service.py`, pure-sync) — the "exactly one reply"
-  guarantee: `commit_reply` takes `pg_advisory_xact_lock`, re-checks presence + the reply cap
-  (own-side agent replies since the last **same-side** human `< N=1`), and inserts under
-  `dedup_key` + `ON CONFLICT DO NOTHING`. Human takeover needs no special code (same-side human
-  resets the cap). `persist_draft`/`approve_draft` = the `assist`/`confirm` send gate (draft + notify,
-  approve = takeover); `escalate` = status + notification, **no** counterparty message.
-- **Presence** (`conversations/presence.py`) — Redis `presence:{conv}:{user}` w/ TTL; fail-safe = absent.
-- **Inngest** (`conversations/functions.py`) — `thread/inbound`-triggered `thread_inbound`:
-  `step.wait_for_event("thread/focused", if_exp=…, timeout=grace)` debounce (45s, env-overridable),
-  early presence + cap re-check (2nd inbound while absent → **escalate**), then one Graph 2 turn;
-  broadcasts the reply to the thread group. Outreach fan-out emits `thread/inbound` for registered
-  buyers (prospects have no agent). Durability = Inngest retries + `message` idempotency (not the checkpoint).
-- **ThreadConsumer** (`ws/thread/<id>/`) — presence (focus/blur/typing → `thread/focused` + broadcast),
-  `message.send` (persist + broadcast `message.new` + emit `thread/inbound` for the counterparty),
-  agent-reply handback over the `thread_{id}` group.
-- **REST** — `/api/threads/` (inbox list/detail/messages, thread-scoped `mandate` GET/PUT for the
-  auto-reply/autonomy toggle, `approve-draft`), `/api/notifications/` (feed + read).
-- **Frontend** — an Inbox + thread view: live socket, counterparty presence, agent-vs-human
-  authorship badges + action chips, auto-reply/autonomy toggle, draft approval, a notifications bell.
-
-Backend suite green (`make test`, 37 passed): P0 spike, schema, engine (comps + `rank_buyers` +
-`assess_deal`), seed idempotency/rebase, copilot plumbing, outreach (ledger + fan-out idempotency +
-slice), and **P3 — the commit-gate invariant (one reply; takeover stands down; 2nd inbound escalates;
-cap resets only on same-side human), the disclosure gates (policy + literal-leak output check),
-assess_deal divergence, draft/approve, and responder routing** — all LLM-free. The live two-stage
-airlock was smoke-verified end-to-end against seeded data + OpenRouter: a `qualify` reply whose body
-never leaks the ceiling, and a prompt-injection inbound that escalates without replying. **⛔ Gate to
-seller role / stretch:** the P3 slice demoed in the browser (mandatory human checkpoint — plan P3):
-seller launches outreach → offline buyers' agents auto-reply (qualify/hold/decline divergence) → seller
-watches replies land; opening a thread + typing = takeover. **Resume:** demo P3 buyer role, sign off,
-then flip `role="seller"`; the agent↔agent multi-round loop remains **stretch** (do not build).
-
-Key design docs (keep these authoritative — update them when a decision changes):
-- [`.claude/context/PRODUCT.md`](./.claude/context/PRODUCT.md) — product definition (what/why)
-- [`.claude/docs/PRD.md`](./.claude/docs/PRD.md) — product requirements
-- [`.claude/docs/TDD.md`](./.claude/docs/TDD.md) — technical design (architecture · data model · AI pipeline · stack reasoning); synthesizes the docs below for Andy/Arbaz
-- [`.claude/docs/features.md`](./.claude/docs/features.md) — features & user flows
-- [`.claude/docs/architecture.md`](./.claude/docs/architecture.md) — Polaris agent architecture (LangGraph)
-- [`.claude/docs/matching_and_data.md`](./.claude/docs/matching_and_data.md) — matching/ranking engine, comping & King County seed data
-- [`.claude/context/data_model_decisions.md`](./.claude/context/data_model_decisions.md) — data model & schema decisions
-- [`.claude/context/domain_wholesaling.md`](./.claude/context/domain_wholesaling.md) — domain primer
-
-## Tech stack
-
-**Decided:**
-- **Frontend:** Next.js
-- **Backend:** Python · Django REST Framework (DRF)
-- **Database:** PostgreSQL **+ PostGIS** (buy-box geography + behavioral "bought-in-area" matching)
-- **AI/LLM:** via **OpenRouter** — Sonnet 4.6 (workhorse: copilot + away-responder),
-  Opus 4.8 (escalation; no call sites today, kept wired), Haiku 4.5 (bulk
-  screen/triage/auto-titling). Defaults in `polaris_agent/models.py`, env-overridable
-  (`POLARIS_MODEL_*`). ⚠️ A GPT-5.6 switch was tried 2026-07-10 and **reverted
-  2026-07-11** — Terra abandoned tool chains after a failed lookup and skipped pre-tool
-  narration in live flows. GPT models remain usable via env; `get_model` omits
-  temperature for GPT-5-family IDs (they reject it).
-- **Agent framework:** **LangGraph** (copilot · auto-responder turn · outreach fan-out);
-  checkpointer = Postgres (`langgraph-checkpoint-postgres`)
-- **Prompts & observability:** **Langfuse Cloud** (added 2026-07-13) — runtime **source of
-  truth for system prompts** (edit/version/label in its UI; `LANGFUSE_PROMPT_LABEL` picks
-  the deployment, default `production`) **+ tracing** of both graphs and the two inline
-  LLM calls. Optional by construction: on iff `LANGFUSE_PUBLIC_KEY`/`SECRET_KEY` are set;
-  keyless (tests, offline dev) everything runs on code fallbacks with **zero network**.
-  Registry = `polaris_agent/prompt_store.py` (shared fragments + composed surfaces via
-  Langfuse composability tags); the constants in `polaris_agent/prompts/__init__.py` are
-  the permanent, parity-tested fallbacks — **changing a prompt in code means updating the
-  constant, then `make sync-prompts --update`** (registry and constants may not drift:
-  `tests/test_prompt_store.py` enforces byte parity). Tracing seams =
-  `polaris_agent/observability.py` (trace names `copilot-turn` / `responder-turn` /
-  `outreach-summary` / `copilot-title`; sessions `copilot:{conv_id}` / `chat:{chat_id}`;
-  a `fallback-prompt` tag doubles as the outage signal). ⚠️ The deterministic guardrails
-  (`disclosure.py` regexes, policy gate, output check) are CODE, never Langfuse prompts —
-  a prompt edit must not be able to weaken the airlock. Live demo iteration:
-  `LANGFUSE_PROMPT_LABEL=latest` + `LANGFUSE_PROMPT_CACHE_TTL=0`; the copilot picks up
-  edits on reconnect (its system prompt composes per WS connection). Server URL:
-  `LANGFUSE_BASE_URL` (preferred; `LANGFUSE_HOST` also accepted) — EU cloud default,
-  US-region projects need `https://us.cloud.langfuse.com`. Known + accepted: traces
-  include the responder's Stage-1 PRIVATE context (mandate floors/ceilings) — same
-  trust domain as the DB, and demo data is fictional; if that changes, the SDK `mask=`
-  hook on the client in `prompt_store.langfuse_client()` is the seam. Prompt↔trace
-  linking = name/version/is_fallback in trace metadata; the native LangChain link
-  needs template-object chains, which would reintroduce the brace-injection hazard
-  around user text (verified vs docs 2026-07-13 — do not "fix" this).
-- **Durable execution / async orchestration:** **Inngest** (events, retries, fan-out, long human waits)
-- **Real-time transport:** **WebSockets** (chat + presence on one socket)
-- **No vector store in v1** — ranking is behavioral-first; revisit only if semantic recall is needed
-- **Notifications:** in-app only (no email/SMS)
-
-See `.claude/docs/architecture.md` and `.claude/context/data_model_decisions.md` for rationale.
-
-**Resolved during Phase 0** (see `implementation_plan.md` §3): **auth = session cookies**
-(Django sessions + DRF `SessionAuthentication`; WS auth free via Channels'
-`AuthMiddlewareStack`), **media = URL-only** (no object storage in the demo — MinIO was
-removed 2026-07-08; `ListingMedia` stores URLs), schema authored as **Django models +
-migrations** (canonical, matched 1:1 to the DDL), Inngest **kept**. ASGI server = **uvicorn**; SPA cross-origin handled by
-**CORS + credentials** (SameSite=Lax works same-site on localhost).
-
-**Still not decided** (see `.claude/context/PRODUCT.md` §6/§8): search infra, hosting/CI,
-payments. **Do not silently pick one** — propose options and confirm before introducing a
-major dependency or service. (#5 provider: transport = **OpenRouter**, models = the
-Anthropic lineup — a GPT-5.6 trial was reverted 2026-07-11; the wiring stays
-provider-agnostic behind `polaris_agent/models.py`.)
-
-## How to work in this repo
-
-- **Confirm scope before building.** This is a POC/MVP being defined. Prefer clarifying
-  the intended feature set over assuming it.
-- **Keep `.claude/context/PRODUCT.md` authoritative.** If a product detail changes or a new decision is
-  made, update `.claude/context/PRODUCT.md` (and `README.md` if user-facing) so docs stay the source of
-  truth.
-- **Respect the decided stack** (Next.js / DRF / PostgreSQL) unless the user changes it.
-- **Match existing conventions** once code exists. There are none yet, so when scaffolding,
-  follow idiomatic, current best practices for each framework and keep frontend/backend
-  cleanly separated.
-- **Flag open questions** (autonomy of the AI agent, matching signals, trust & safety,
-  ownership verification, target market) rather than guessing — these are listed in
-  `.claude/context/PRODUCT.md` §8.
-
-## Structure
-
-```
-backend/                 Django 5.2 ASGI project (one deployable)
-  config/                settings (base/dev), asgi.py (ProtocolTypeRouter), urls, lifespan
-  accounts/ catalog/ buyers/ matching/ conversations/ outreach/
-  agent_context/ notifications/ orchestration/   ← one app per domain (plan §2)
-  polaris_agent/         import-isolated agent pkg: checkpointer, graphs/, tools/, prompts/,
-                         prompt_store (Langfuse registry+fallbacks), observability (tracing), models, dal
-  seed/data/             king_county_sales.csv (P1 seed_kc source)
-  tests/                 P0 spike tests (the gate)
-frontend/                Next.js 15 App Router (Tailwind 4, TanStack Query, session+CSRF client)
-docker-compose.yml       5 services, one .env; `docker compose up` = the whole stack
-```
+Design docs live in `.claude/` (gitignored, local-only): `context/PRODUCT.md` (product source of truth), `docs/TDD.md` (technical design), `docs/architecture.md` (the agent layer in depth), `docs/matching_and_data.md` (matching engine + demo seed), `context/domain_wholesaling.md` (domain primer), `docs/PRD.md` (original scope contract). `DEMO.md` at the repo root (tracked) is the demo script with seeded logins.
 
 ## Commands
 
-- **Bring up the whole stack:** `docker compose up --build` (or `make up` / `make up-d`). Frontend
-  on http://localhost:3000, API on http://localhost:8000, Inngest dev UI on :8288.
-  First boot generates migrations in-container, migrates, creates a demo
-  login (`demo` / `demo12345`) + P0 geo fixtures, and runs `seed_kc` — the **Kessler County
-  demo world** (~3.2k properties across 8 fictional towns, every one with a resolvable street
-  address; archetype-varied buyer personas). The seed prints a demo cheat-sheet (addresses +
-  logins); **see [`DEMO.md`](./DEMO.md) for the full demo script**.
-- **The copilot demo:** open http://localhost:3000 and log in. Use the **seed seller**
-  (`kc_seller_1@polaris.local` / `polaris123`) to see the 15 seeded listings and value them, or
-  `demo` for a fresh intake. Seed buyers are `kc_buyer_1..15@polaris.local` (same password);
-  they have buy-boxes + history. The `/buyers` Find Buyers page uses closed-world address
-  autocomplete (`/api/properties/search`) — type a street or town fragment and pick.
-- **The auto-responder demo:** as `kc_seller_1@polaris.local`, ask the copilot to "reach out to the best buyers
-  for listing #N" and approve. The offline buyers' agents auto-reply after the grace window — open
-  http://localhost:3000/inbox to watch the qualify/hold/decline replies land per thread. Opening a
-  thread + typing is the human takeover (presence silences that side's agent). Shorten the wait for a
-  live demo with `RESPONDER_GRACE_SECONDS` (default 45). Inngest dev UI on :8288 shows `thread-inbound`.
-- **Fresh-clone reset:** `make down-v` (drops volumes) then `make up`.
-- **Run the test suite (the gate):** `make test` — `makemigrations && pytest` in the backend
-  container (schema, matching engine incl. `assess_deal`, seed idempotency/rebase/address
-  resolvability, property search, copilot plumbing, outreach ledger/fan-out, the commit-gate
-  invariant + disclosure gates, P0 spike). 95 passing, 2 skipped (live-LLM smokes).
-- **Migrations / shell / psql / format:** `make migrate` · `make shell` · `make psql` · `make fmt`.
-- **Langfuse prompt sync:** `make sync-prompts` (needs `LANGFUSE_*` keys in `.env`) — idempotent
-  create-if-missing bootstrap of the prompt library; re-runs report drift vs the code registry
-  (`ARGS="--update --promote"` pushes + labels new versions).
-- **Regenerate the typed FE client** (backend must be up): `cd frontend && npm run gen:api`.
+The whole stack runs in Docker (postgres, redis, backend, frontend, inngest; one `.env`):
 
-> P0 note: DB migrations are generated in-container at boot (Django/GDAL can't run on the
-> host). P1.1 commits them and reviews them 1:1 against the DDL.
+```bash
+make up            # docker compose up --build; `make up-d` = detached
+make down-v        # stop + drop volumes (fresh-clone reset)
+make test          # backend suite in-container (makemigrations + pytest)
+make fmt           # black + ruff --fix (backend, in-container)
+make migrate       # also: makemigrations, shell, psql, logs, ps
+make seed          # idempotent Kessler County demo seed; `make seed-reset` rebuilds it
+make sync-prompts  # push code prompts to Langfuse (ARGS="--update --promote")
+```
+
+- Frontend http://localhost:3000 · API http://localhost:8000 · Inngest dev UI http://localhost:8288
+- Single test: `docker compose exec backend pytest tests/test_chat.py -q` (or `-k <expr>`)
+- Regenerate the typed frontend API client after API changes (backend must be up): `cd frontend && npm run gen:api`
+- Migrations must be generated in-container — the host lacks GDAL, so `manage.py` won't run on the host.
+- First boot migrates, seeds the demo world, and prints a cheat-sheet of demo logins (see `DEMO.md`).
+
+## Architecture
+
+**Stack:** Next.js 15 App Router (Tailwind 4, ShadCN, TanStack Query, generated OpenAPI client) · Django 5.2 ASGI (DRF + Channels on uvicorn) · PostgreSQL + PostGIS · Redis (channel layer + presence) · Inngest (durable async: retries, fan-out, debounce) · LangGraph agents (Postgres checkpointer) · LLMs via OpenRouter — Sonnet 4.6 workhorse, Opus 4.8 escalation tier, Haiku 4.5 for screening/triage/titling (`POLARIS_MODEL_*` env overrides) · Langfuse for prompt management + tracing (optional: keyless runs on code fallbacks with zero network).
+
+**Backend — one Django app per domain:**
+
+- `users` — custom email-login `User`; `UserProfile` holds the agent governance knobs (away-assistant enable, autonomy, instructions, reply cap)
+- `catalog` — `Property`, `Listing` (bundle-native M2M via `ListingProperty`), `BuyBox`(+`BuyBoxGeo`), `Sale` (behavioral purchase history), `Mandate` (per-deal floor/ceiling + instructions); media is URL-only. `services.py` is the shared write seam — REST views and agent tools both go through it.
+- `matching/engine.py` — deterministic PostGIS engine: `get_comps`, `estimate_value` (+ARV), `rank_buyers`, `assess_deal`. No LLM anywhere in scoring.
+- `chat` — human-to-human messaging: one `Chat` per user pair, listings attach to messages; the away-responder's commit gate (`responder_service.py`), Redis presence, Inngest inbound debounce
+- `ai` — copilot sessions (`AiChat`/`AiMessage`, the block-structured transcript that is the system of record — graphs rehydrate from the DB, not the LangGraph checkpoint), agent memory, and the outreach campaign/recipient ledger
+- `deals` — mini CRM; pipeline stages are driven by agent and human actions in chat
+- `notifications` — in-app only
+- `polaris_agent` — import-isolated agent package: LangGraph graphs (`graphs/`), tools (`tools/`), prompts + the Langfuse registry (`prompts/`, `prompt_store.py`), disclosure gates (`disclosure.py`), tracing (`observability.py`), and `dal.py` — the only ORM path, every function user-scoped
+- `orchestration` — Inngest client and function registration
+
+**The agent layer:**
+
+- Copilot: a full agentic assistant over WebSocket; tools mirror the API (broad filterable reads, narrow typed writes); every write is confirm-gated via LangGraph interrupt, persisted in `AiChat.pending_confirm` so a pending confirmation survives reloads.
+- Away-responder: a two-stage airlock. Haiku injection screen → deterministic engine assessment → Stage 1 decides on private context (closed structured output — no slot for mandate figures) → code policy gate → Stage 2 drafts from public-only context → code literal-leak check → commit gate. Stage 2 cannot leak a limit it never saw.
+- Commit gate (the "exactly one reply" invariant): `pg_advisory_xact_lock` + presence/reply-cap re-check + `dedup_key` with `ON CONFLICT DO NOTHING`. Presence (focus/typing) is human takeover; a second inbound while away escalates; escalation pauses the agent on that chat rather than killing it.
+- Negotiation is gate-bounded: the agent may auto-propose only within the mandate, and only monotonically; accepting an offer is always a human-signed draft. Mandate figures reach the counterparty only via explicit share flags, with engine-rendered numbers.
+- Outreach: the copilot ranks and drafts, the human approves, Inngest fans out one durable step per recipient against a partial-unique "sent" ledger — a listing reaches a buyer at most once, ever.
+
+**Frontend:** `app/(app)/` pages — `polaris-ai` (copilot), `chat` (inbox + threads), `deals`, `listings` (incl. the marketplace), `buyers`, `settings`. Session-cookie auth + CSRF handled in `lib/api.ts`; WebSockets carry copilot streaming, chat, and presence.
+
+## Hard rules
+
+- The deterministic guardrails — `polaris_agent/disclosure.py`, the responder policy gate, the literal-leak output check, the commit gate — are code, never Langfuse prompts. A prompt edit must not be able to weaken the airlock.
+- Prompt constants in `polaris_agent/prompts/__init__.py` are byte-parity-tested against the Langfuse registry (`tests/test_prompt_store.py`). Changing a prompt in code means updating the constant, then `make sync-prompts ARGS="--update"`.
+- Tool docstrings in `polaris_agent/tools/` and structured-output model docstrings/Field descriptions are LLM-facing — editing them changes agent behavior.
+- Model wiring stays provider-agnostic behind `polaris_agent/models.py`; `get_model` omits temperature for GPT-family model IDs (they reject it).
+- The test suite is LLM-free by design; live-LLM smokes are skipped by default. Keep it that way — graph routing, gates, and services are tested deterministically.
+- Still undecided (don't silently pick one; propose and confirm first): search infrastructure, hosting/CI, payments.
