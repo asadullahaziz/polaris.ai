@@ -16,11 +16,11 @@ derive from that single registry so they can never drift:
     network.
 
 Parity rule: optional content (personalization, deal-stage note, principal
-note) is passed as a pre-rendered variable that INCLUDES its own "\n\n"
+note) is passed as a pre-rendered variable that includes its own "\n\n"
 prefix and lands via ``suffix_vars`` (appended with no joiner). An empty
-variable therefore yields output byte-identical to the legacy composition
-functions in ``polaris_agent.prompts`` — the parity tests hold both sides up
-against each other.
+variable therefore yields output byte-identical to the composition functions
+in ``polaris_agent.prompts`` — the parity tests hold both sides up against
+each other.
 
 The deterministic guardrails (disclosure regexes, policy gate, output check)
 are NOT prompts and must never move here — a prompt edit must not be able to
@@ -68,8 +68,9 @@ class Surface:
     """A runtime-fetchable prompt. ``parts`` are joined with "\\n\\n"; a part
     starting with "@" references a fragment, anything else is literal text
     (which may itself carry ``{{var}}`` tokens). ``suffix_vars`` are appended
-    to the body with NO joiner — their values carry their own "\\n\\n" prefix
-    (or are empty), preserving byte parity with the legacy composers."""
+    to the body with no joiner — their values carry their own "\\n\\n" prefix
+    (or are empty), preserving byte parity with the composers in
+    ``polaris_agent.prompts``."""
 
     name: str
     parts: tuple[str, ...]
@@ -81,9 +82,9 @@ def _surface(name, parts, variables=(), suffix_vars=()):
     return Surface(name, tuple(parts), tuple(variables), tuple(suffix_vars))
 
 
-# Micro-fragment leaf surfaces: the optional f-string sentences from the
-# legacy composers, made editable. Callers compile these only when the
-# condition holds and prepend "\n\n" before passing them as a suffix var.
+# Micro-fragment leaf surfaces: the optional one-sentence additions, made
+# editable. Callers compile these only when the condition holds and prepend
+# "\n\n" before passing them as a suffix var.
 _ASSISTING_NOTE = "You are assisting {{display_name}}."
 _STANDING_INSTRUCTIONS = (
     "The user set these standing instructions for you "

@@ -1,21 +1,18 @@
 """
-Provider-agnostic model wiring (ported from v1 P0.14, unchanged in v2).
+Provider-agnostic model wiring.
 
-#5 (OpenRouter vs native Anthropic) is deferred, so model access hides behind a
-single `get_model(role)` interface with the provider chosen by config
-(`settings.LLM_PROVIDER`). Graph/tool code never names a provider — swapping is a
-settings change.
+Model access hides behind a single `get_model(role)` with the provider chosen
+by `settings.LLM_PROVIDER`. Graph/tool code never names a provider — swapping
+is a settings change.
 
-Roles (CLAUDE.md tech stack):
+Roles:
   * workhorse  — copilot + away-responder
   * escalation — hard cases (unused today; kept as a wired step-up path)
   * bulk       — ranking/classification + auto-titling at volume
 
-Defaults: the Anthropic lineup via OpenRouter (Sonnet 4.6 / Opus 4.8 / Haiku 4.5).
-A GPT-5.6 switch was tried 2026-07-10 and REVERTED 2026-07-11: in live product flows
-Terra abandoned tool chains after one failed lookup (instead of falling back to
-search_properties / list_my_listings) and skipped pre-tool narration. GPT models stay
-usable via the env vars; `_accepts_temperature` keeps that path safe.
+Defaults are the Anthropic lineup via OpenRouter, overridable per role via the
+POLARIS_MODEL_* env vars. GPT models are usable through those vars;
+`_accepts_temperature` keeps that path safe.
 """
 
 from __future__ import annotations

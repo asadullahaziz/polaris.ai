@@ -50,7 +50,7 @@ class AgentMemorySerializer(serializers.ModelSerializer):
         fields = ["id", "namespace", "content", "created_at", "updated_at"]
 
 
-# ---- outreach (P5) — the shortlist the FE renders for approval ------------------
+# ---- outreach — the shortlist the FE renders for approval -----------------------
 def _listing_address(listing_id) -> str | None:
     from catalog.models import ListingProperty
 

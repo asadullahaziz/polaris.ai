@@ -91,7 +91,7 @@ class OutreachCampaignViewSet(
 ):
     """The seller's outreach campaigns + the ranked shortlist. Approval is the batch-level
     send gate: it flips the campaign to `sending` and emits the durable `outreach/approved`
-    event — a fresh event, not a parked wait, so it survives a closed tab (architecture §6)."""
+    event — a fresh event, not a parked wait, so it survives a closed tab."""
 
     permission_classes = [IsAuthenticated]
     serializer_class = OutreachCampaignSerializer

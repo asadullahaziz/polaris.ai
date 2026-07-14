@@ -1,5 +1,5 @@
 """
-Session-cookie auth + account lifecycle (v2 auth design).
+Session-cookie auth + account lifecycle.
 
   GET  /api/auth/csrf              -> primes the `csrftoken` cookie
   POST /api/auth/register          -> create account (unverified) + email a token

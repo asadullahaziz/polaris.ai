@@ -1,30 +1,30 @@
 """
-Outreach service (Graph 3 · P5, reshaped 2026-07-07) — the deterministic, invariant-
-bearing core, kept **pure and synchronous** so the ledger / idempotency guarantees are
-unit-testable without the Inngest dev server.
+Outreach service — the deterministic, invariant-bearing core, kept pure and
+synchronous so the ledger / idempotency guarantees are unit-testable without the
+Inngest dev server.
 
-Reshaped to EXPLICIT recipients (the decomposed tool design): the model/UI selects who
-gets what — `recipients = [{user_id, listing_ids, body?}]` — and this layer enforces
-truth at commit: ownership, registered users, the delivery ledger, and idempotent sends.
-Ranking is NOT done in here anymore (it's a separate read — `engine.rank_buyers_multi`);
-the engine is only consulted to ANNOTATE rows with authoritative score/reason per
-(listing, buyer), never to choose.
+Recipients are explicit: the model/UI selects who gets what —
+`recipients = [{user_id, listing_ids, body?}]` — and this layer enforces truth at
+commit: ownership, registered users, the delivery ledger, and idempotent sends.
+Ranking is a separate read (`engine.rank_buyers_multi`); the engine is only consulted
+here to annotate rows with authoritative score/reason per (listing, buyer), never to
+choose.
 
-The split (architecture §6, §9):
+The split:
   * `launch_outreach`  → validate → ledger-dedup per (buyer, listing) pair → persist
     campaign(`awaiting_approval`) + one recipient row per pair (per-buyer opener body,
     model-drafted or templated fallback) + a notification.
-  * `approve_campaign` / `cancel_campaign` → the send-gate (batch level). Approval flips
-    the campaign to `sending`; the CALLER (REST view or copilot tool) emits the durable
+  * `approve_campaign` / `cancel_campaign` → the send gate (batch level). Approval flips
+    the campaign to `sending`; the caller (REST view or copilot tool) emits the durable
     `outreach/approved` event — the service stays free of Inngest so it's testable.
-  * `send_to_buyer`    → the per-BUYER send: ONE opener message per buyer covering all
-    their surviving listings (multi-listing = multiple attachments). The LEDGER GUARANTEE
-    lives per (listing, buyer): already-reached pairs drop out; survivors flip to SENT
-    under the partial-unique constraint; a buyer whose pairs ALL drop gets no message.
+  * `send_to_buyer`    → the per-buyer send: one opener message per buyer covering all
+    their surviving listings (multi-listing = multiple attachments). The ledger guarantee
+    lives per (listing, buyer): already-reached pairs drop out; survivors flip to sent
+    under the partial-unique constraint; a buyer whose pairs all drop gets no message.
     Opener idempotency via `dedup_key=outreach:c{campaign}:u{buyer}` + ON CONFLICT.
     Called once per Inngest fan-out step; safe to replay.
 
-Nothing here calls a model. The only LLM in Graph 3 is the copilot's narration/drafting
+Nothing here calls a model. The only LLM in outreach is the copilot's narration/drafting
 and the one post-fan-out summary (`ai/functions.py`).
 """
 
@@ -54,7 +54,7 @@ def _deal_phrase(prop, asking_price) -> str:
 def build_opener(deals: list[tuple], name: str) -> str:
     """Deterministic fallback opener over one or more (property, asking_price) deals.
     Kept generic (no engine reason) so the confirm-card preview and the sent text are
-    IDENTICAL — the copilot normally drafts a personalized body instead."""
+    identical — the copilot normally drafts a personalized body instead."""
     first = name.split()[0] if name else "there"
     phrases = [_deal_phrase(p, ap) for p, ap in deals]
     if len(phrases) == 1:
@@ -69,7 +69,7 @@ def build_opener(deals: list[tuple], name: str) -> str:
 # ---------------------------------------------------------------------------
 @transaction.atomic
 def launch_outreach(seller_id: int, recipients: list[dict], *, copilot_ai_chat_id=None) -> dict:
-    """Persist a draft campaign from EXPLICIT selections. `recipients` =
+    """Persist a draft campaign from explicit selections. `recipients` =
     [{"user_id", "listing_ids", "body"?}] — each buyer gets one opener covering exactly
     the listing_ids given for them (the caller sends each buyer only what they match).
     Validation is strict (any foreign listing / unknown user fails the whole launch);
@@ -110,7 +110,7 @@ def launch_outreach(seller_id: int, recipients: list[dict], *, copilot_ai_chat_i
         return {"error": f"recipient user(s) {bad} not found (or the seller themself)"}
 
     # Engine annotation — authoritative score/reason per (listing, buyer). The caller
-    # SELECTED; the engine NUMBERS. Pairs the engine doesn't rank stay None (still valid
+    # selects; the engine scores. Pairs the engine doesn't rank stay None (still valid
     # to contact — e.g. a buyer the user named explicitly).
     ann: dict[tuple[int, int], tuple[float, str]] = {}
     for lid in all_listing_ids:
@@ -232,11 +232,11 @@ def cancel_campaign(seller_id: int, campaign_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Send one BUYER — the ledger guarantee per pair, ONE message per buyer
+# Send one buyer — the ledger guarantee per pair, one message per buyer
 # ---------------------------------------------------------------------------
 @transaction.atomic
 def send_to_buyer(campaign_id: int, user_id: int) -> dict:
-    """Open the (seller, buyer) pair chat and post ONE opener covering every listing in
+    """Open the (seller, buyer) pair chat and post one opener covering every listing in
     this campaign that survives the ledger for this buyer. Per-pair guarantee: a listing
     reaches a buyer once, ever — an already-reached pair drops out of the attachments
     (a buyer whose pairs ALL drop gets no message at all). Safe to replay (Inngest
@@ -267,7 +267,7 @@ def send_to_buyer(campaign_id: int, user_id: int) -> dict:
             r.chat = chat
             r.save(update_fields=["status", "chat"])
             continue
-        # Layer 2 (the guarantee): flip to SENT under the partial-unique ledger
+        # Layer 2 (the guarantee): flip to sent under the partial-unique ledger
         # constraint. A concurrent send that also passed layer 1 loses the race → skip.
         try:
             with transaction.atomic():
@@ -325,8 +325,8 @@ def send_to_buyer(campaign_id: int, user_id: int) -> dict:
     return {
         "status": "sent" if (created or newly_flipped) else "already_sent",
         "chat_id": chat.id,
-        # For the fan-out to arm the buyer's away-responder (Graph 2): the opener is an
-        # inbound to the buyer's side.
+        # For the fan-out to arm the buyer's away-responder: the opener is an inbound
+        # to the buyer's side.
         "recipient_user_id": user_id,
         "opener_message_id": opener_id,
         "listing_ids": [r.listing_id for r in sent_rows],
@@ -334,9 +334,9 @@ def send_to_buyer(campaign_id: int, user_id: int) -> dict:
 
 
 def _get_or_create_pair_chat(seller_id: int, buyer_id: int):
-    """The ONE chat for the (seller, buyer) pair — reused across listings/campaigns
-    (revisions decision #3). A repeat outreach to the same buyer reopens this same chat
-    and just attaches the new listing(s)."""
+    """The one chat for the (seller, buyer) pair — reused across listings/campaigns.
+    A repeat outreach to the same buyer reopens this same chat and just attaches the
+    new listing(s)."""
     from chat.services import get_or_create_chat
 
     chat, _ = get_or_create_chat(seller_id, buyer_id)
@@ -381,7 +381,7 @@ def _insert_opener(chat, seller_id: int, body: str, listing_ids: list[int], key:
 # ---------------------------------------------------------------------------
 def campaign_dispatch_info(campaign_id: int) -> dict | None:
     """Everything the Inngest fan-out needs, without holding ORM objects across steps.
-    The send unit is the BUYER: `buyer_ids` = distinct pending recipients, best rank
+    The send unit is the buyer: `buyer_ids` = distinct pending recipients, best rank
     first."""
     from catalog.models import ListingProperty
 
@@ -417,7 +417,7 @@ def campaign_dispatch_info(campaign_id: int) -> dict | None:
 
 
 def campaign_outcome(campaign_id: int) -> dict:
-    """Tallied at BUYER granularity (a buyer counts as reached if ≥1 of their pairs
+    """Tallied at buyer granularity (a buyer counts as reached if ≥1 of their pairs
     sent), for the progress ticks + final summary. Pair-level counts ride along."""
     from .models import OutreachRecipient
 

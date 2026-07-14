@@ -76,8 +76,7 @@ export default function BuyersPage() {
   const [msgBusy, setMsgBusy] = useState<number | null>(null);
   const [selected, setSelected] = useState<PropertySearchResult | null>(null);
 
-  // The "county record" moment: picking a suggestion auto-fills the deal form
-  // from the known property record (real platforms pull public records here).
+  // Picking a suggestion auto-fills the deal form from the known property record.
   function onPick(p: PropertySearchResult) {
     setAddress(p.address_raw);
     setSelected(p);

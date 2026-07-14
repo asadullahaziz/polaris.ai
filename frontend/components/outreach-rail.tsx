@@ -99,7 +99,7 @@ export function OutreachRail({ className }: { className?: string }) {
             <p className="text-sm text-muted-foreground">No outreach yet.</p>
           )}
           {campaigns.map((c) => {
-            // Multi-listing: several ledger rows per buyer. Count/act on distinct BUYERS
+            // Multi-listing: several ledger rows per buyer. Count/act on distinct buyers
             // and show which listing each row covers.
             const multi = !c.listing_address && c.listing_addresses.length > 1;
             const pending = new Set(

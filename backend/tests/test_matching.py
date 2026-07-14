@@ -1,5 +1,5 @@
 """
-P1 engine verification — comps / valuation / assess_deal / rank_buyers.
+Matching-engine verification — comps / valuation / assess_deal / rank_buyers.
 
 All LLM-free: a small synthetic comp cluster (fast, no CSV). The seed's idempotency
 + date rebase live in test_seed.py.
@@ -57,7 +57,7 @@ def test_get_comps_finds_similar_and_gates_waterfront():
             price=str(480000 + 6000 * i),
             apn=f"c{i}",
         )
-    _mk(-122.331, 47.600, waterfront=True, price="2000000", apn="wf")  # must be EXCLUDED
+    _mk(-122.331, 47.600, waterfront=True, price="2000000", apn="wf")  # must be excluded
 
     res = get_comps(subj, min_n=5)
     assert res["met_min_n"] and res["n"] >= 5

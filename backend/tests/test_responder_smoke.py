@@ -1,15 +1,16 @@
 """
-P4 — away-responder two-stage airlock, SMOKED against a live provider (OpenRouter).
+Away-responder two-stage airlock, smoked against a live provider (OpenRouter).
 
-**Skipped by default** (`make test` stays LLM-free); run with `POLARIS_LIVE_LLM=1` in an
+Skipped by default (`make test` stays LLM-free); run with `POLARIS_LIVE_LLM=1` in an
 environment configured with `LLM_PROVIDER=openrouter` + `OPENROUTER_API_KEY`. Uses a real
 provider round-trip through the whole graph, so it needs the DB committed across the
 sync_to_async threadpool → `django_db(transaction=True)` + `async_to_sync`.
 
 What it proves end-to-end (the structural airlock, not just the gates):
-  * a sell-side price question on the principal's OWN listing → a real reply whose body
-    never leaks the floor literal (Stage 2 never sees the mandate; output check backs it);
-  * a prompt-injection inbound → escalate, with NOTHING posted to the counterparty.
+  * a sell-side price question on the principal's own listing → a real reply whose body
+    never leaks the floor literal (the draft stage never sees the mandate; the output
+    check backs it);
+  * a prompt-injection inbound → escalate, with nothing posted to the counterparty.
 The bounded agent↔agent loop's termination is proven LLM-free in `test_responder_gate.py`.
 """
 
@@ -91,7 +92,7 @@ def test_sell_side_reply_never_leaks_floor():
     for leak in ("700,000", "700000", "700k", "$700"):
         assert leak not in low, f"floor leaked in body: {body!r}"
 
-    # The human-voice contract (2026-07-08): the deterministic gate already enforced
+    # The human-voice contract: the deterministic style gate already enforced
     # this before commit — re-assert on the final body as the end-to-end proof.
     from polaris_agent.disclosure import style_check
 

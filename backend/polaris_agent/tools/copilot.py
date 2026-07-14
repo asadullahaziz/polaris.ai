@@ -1,20 +1,19 @@
 """
-The copilot tool suite (architecture §7; revisions §polaris-ai) — the *full agentic*
-surface. `copilot_tools(principal_id)` returns LangChain tools bound to one user, so
-tools never need config plumbing to know whose data they touch, and every write is
-scoped to that user's own rows.
+The copilot tool suite. `copilot_tools(principal_id)` returns LangChain tools bound
+to one user, so tools never need config plumbing to know whose data they touch, and
+every write is scoped to that user's own rows.
 
-Two tiers (revisions "action safety posture — confirm every write"):
-  * READS run freely — valuations, comps, rankings, lookups, listing/reading own data.
-  * WRITES are propose → confirm → commit: the tool builds a structured proposal, calls
-    `_confirm(...)` which raises a LangGraph **human-in-the-loop interrupt**, and only
-    commits (via `dal`) once the user approves. The graph pauses at the interrupt; the
-    consumer surfaces a confirm card and resumes with `Command(resume={"approved": …})`.
-    This makes "nothing is written without an explicit tap" true BY CONSTRUCTION and
-    generalizes v1's outreach-approval gate to every mutation.
+Two tiers:
+  * Reads run freely — valuations, comps, rankings, lookups, listing/reading own data.
+  * Writes are propose → confirm → commit: the tool builds a structured proposal,
+    calls `_confirm(...)` which raises a LangGraph human-in-the-loop interrupt, and
+    only commits (via `dal`) once the user approves. The graph pauses at the
+    interrupt; the consumer surfaces a confirm card and resumes with
+    `Command(resume={"approved": …})`. Nothing is written without an explicit tap,
+    by construction.
 
 Every factual number comes from the deterministic engine (via `dal`); the LLM decides
-WHEN to call and narrates the WHY — it never invents a price, score, or id.
+when to call and narrates why — it never invents a price, score, or id.
 """
 
 from __future__ import annotations
@@ -31,8 +30,8 @@ from polaris_agent.models import get_model
 
 log = logging.getLogger(__name__)
 
-# Names of the tools that go through the confirm-every-write interrupt (introspected
-# by tests + the consumer's UX copy). write_memory is a low-stakes write and is exempt.
+# Tools that go through the confirm-every-write interrupt (introspected by tests +
+# the consumer's UX copy). write_memory is a low-stakes write and is exempt.
 WRITE_TOOL_NAMES = {
     "create_listing",
     "update_listing",
@@ -50,9 +49,9 @@ def _confirm(action: str, summary: str, proposal: dict) -> bool:
     """Human-in-the-loop gate for a write tool. Pauses the graph with a structured
     proposal (the client renders a confirm card) and resumes with the user's decision.
 
-    Returns True only on an explicit approval. The code BEFORE this call re-runs when the
+    Returns True only on an explicit approval. The code before this call re-runs when the
     graph resumes (the tool re-executes from the top), so it must stay side-effect-free —
-    the commit lives strictly AFTER the gate.
+    the commit lives strictly after the gate.
     """
     decision = interrupt(
         {"kind": "confirm_write", "action": action, "summary": summary, "proposal": proposal}
@@ -493,7 +492,7 @@ def copilot_tools(principal_id: int) -> list:
             return {"status": "cancelled", "action": "launch_outreach_campaign"}
 
         # Commit: persist the campaign (via the pure ledger core), flip it to sending, and
-        # fire the durable fan-out event. The Inngest emit lives HERE (not in dal), and is
+        # fire the durable fan-out event. The Inngest emit lives here (not in dal), and is
         # best-effort — the campaign is already staged, so a dev-server hiccup only means
         # the fan-out is retried, never a lost campaign.
         ai_chat_id = (config or {}).get("configurable", {}).get("ai_chat_id")
@@ -644,7 +643,7 @@ def copilot_tools(principal_id: int) -> list:
             return {"status": "cancelled", "action": "update_deal_stage"}
         return await dal.update_deal_stage(principal_id, deal_id, stage)
 
-    # write_memory is a low-stakes write — no confirmation gate (revisions exempt memory).
+    # write_memory is a low-stakes write — no confirmation gate.
     @tool
     async def write_memory(content: str, namespace: str = "general") -> dict:
         """Remember a durable fact about this user so future chats stay consistent."""

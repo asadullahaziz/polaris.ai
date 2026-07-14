@@ -1,15 +1,15 @@
 """
-P3/P4 — the sender-based commit-gate invariant (the "exactly one autonomous reply per
-turn" guarantee) + the per-user reply cap that bounds the P4 agent↔agent away-cover loop.
-LLM-free: exercises `chat/responder_service.py` directly. The LLM turn (Graph 2) is smoked
+The sender-based commit-gate invariant (the "exactly one autonomous reply per turn"
+guarantee) + the per-user reply cap that bounds the agent↔agent away-cover loop.
+LLM-free: exercises `chat/responder_service.py` directly. The LLM turn is smoked
 separately against OpenRouter; this is the DB guarantee that stands on its own.
 
-Covered: caps at the PRINCIPAL's own `agent_reply_cap` (not a hardcoded 1); the cap
-resolves live from the principal's profile; presence stands down; the cap resets ONLY on
-the principal's own human message (not the counterparty's); the bounded agent↔agent chain
-terminates at each side's cap; escalate posts nothing to the counterparty; decline is
-terminal; a draft is owner-only then approve sends exactly once; the AgentActionLog audit
-is written; the dedup ON-CONFLICT layer in isolation.
+Covered: caps at the principal's own `agent_reply_cap`; the cap resolves live from
+the principal's profile; presence stands down; the cap resets only on the
+principal's own human message (not the counterparty's); the bounded agent↔agent
+chain terminates at each side's cap; escalate posts nothing to the counterparty;
+decline is terminal; a draft is owner-only then approve sends exactly once; the
+AgentActionLog audit is written; the dedup ON-CONFLICT layer in isolation.
 """
 
 from __future__ import annotations
@@ -150,11 +150,11 @@ def test_cap_resets_only_on_same_sender_human(pair):
     assert _commit(chat, p, c, inbound["id"])["status"] == "sent"
     assert svc.reply_cap_reached(chat.id, p.id) is True
 
-    # The COUNTERPARTY messaging again does NOT reset the principal's cap.
+    # The counterparty messaging again does not reset the principal's cap.
     _inbound(chat.id, c.id, "hello?")
     assert svc.reply_cap_reached(chat.id, p.id) is True
 
-    # The PRINCIPAL's own human message (the takeover) zeroes their count.
+    # The principal's own human message (the takeover) zeroes their count.
     _inbound(chat.id, p.id, "I've got it from here")
     assert svc.reply_cap_reached(chat.id, p.id) is False
 
@@ -168,8 +168,8 @@ def test_escalate_sets_status_and_notifies_without_posting(pair):
 
     chat.refresh_from_db()
     assert chat.status == "escalated"
-    # Escalation pauses, it doesn't kill (2026-07-08): no terminal; the awaited
-    # human's return reopens the chat.
+    # Escalation pauses, it doesn't kill: no terminal; the awaited human's
+    # return reopens the chat.
     assert chat.terminal is None
     assert chat.escalated_for_id == p.id
     # No cross-boundary message is posted on escalation.
@@ -186,7 +186,7 @@ def test_escalated_chat_reopens_only_for_awaited_human(pair):
     chat.refresh_from_db()
     assert chat.status == "escalated"
 
-    # The counterparty pressing again does NOT reopen (no re-escalation farm).
+    # The counterparty pressing again does not reopen (no re-escalation farm).
     services.post_human_message(chat.id, c.id, "any update?")
     chat.refresh_from_db()
     assert chat.status == "escalated"
@@ -220,7 +220,7 @@ def test_qualify_notifies_both_parties(pair):
 
 @pytest.mark.django_db
 def test_commit_writes_agent_action_log(pair):
-    """The away-agent's PRIVATE audit trail is written on commit; `private_rationale`
+    """The away-agent's private audit trail is written on commit; `private_rationale`
     lands in the payload (owner-only) and never in the sent message body."""
     from ai.models import AgentActionLog
 
@@ -256,7 +256,7 @@ def test_draft_is_owner_only_then_approve_sends_once(pair):
     assert d["status"] == "draft"
     msg_id = d["message_id"]
 
-    # The draft is visible ONLY to its owner (the principal), never the counterparty.
+    # The draft is visible only to its owner (the principal), never the counterparty.
     owner_view = services.list_messages(chat.id, p.id)
     counter_view = services.list_messages(chat.id, c.id)
     assert any(m["id"] == msg_id and m["status"] == "draft" for m in owner_view)
@@ -275,7 +275,7 @@ def test_draft_is_owner_only_then_approve_sends_once(pair):
 @pytest.mark.django_db
 def test_dedup_on_conflict_is_a_no_op(pair, monkeypatch):
     """Isolate the dedup layer from the cap layer: with the cap forced open, a replayed
-    commit for the SAME inbound recomputes the same dedup_key → silent no-op."""
+    commit for the same inbound recomputes the same dedup_key → silent no-op."""
     p, c, chat = pair
     monkeypatch.setattr(svc, "reply_cap_reached", lambda *a, **k: False)
     inbound = _inbound(chat.id, c.id)
@@ -312,7 +312,7 @@ class _StubCtx:
 async def test_zero_grace_skips_the_debounce_instead_of_crashing(settings):
     """RESPONDER_GRACE_SECONDS=0 means 'reply immediately': Inngest rejects sub-second
     wait_for_event timeouts (FunctionConfigInvalidError), so the handler must skip the
-    wait entirely — the regression that silenced every away-reply."""
+    wait entirely rather than arm one and crash."""
     from chat.functions import thread_inbound
 
     settings.RESPONDER_GRACE_SECONDS = 0

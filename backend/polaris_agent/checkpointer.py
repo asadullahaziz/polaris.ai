@@ -1,20 +1,20 @@
 """
-Shared LangGraph checkpointer (P0.8) — the riskiest seam in review #8.
+Shared LangGraph checkpointer.
 
 A single process-wide `AsyncPostgresSaver` over a persistent
-`psycopg_pool.AsyncConnectionPool`, kept *separate* from Django's ORM
+`psycopg_pool.AsyncConnectionPool`, kept separate from Django's ORM
 connection. Built once and reused by every graph invocation on the ASGI worker.
 
 Lifecycle: `config.lifespan` opens it eagerly at ASGI startup and closes it at
-shutdown. Because not every ASGI server delivers lifespan events, `get_checkpointer()`
-also opens it lazily on first use under a lock — so correctness never depends on
+shutdown. Not every ASGI server delivers lifespan events, so `get_checkpointer()`
+also opens it lazily on first use under a lock — correctness never depends on
 lifespan being delivered.
 
 The checkpointer's tables (`checkpoints`, `checkpoint_writes`,
 `checkpoint_blobs`, `checkpoint_migrations`) live in the same Postgres DB as the
 app tables but are created by `setup()`, not Django migrations — no collision.
-The checkpoint is treated as ephemeral; the system of record is our tables
-(architecture §9b).
+Checkpoints are ephemeral within-turn scratch; the system of record is our own
+tables.
 """
 
 from __future__ import annotations

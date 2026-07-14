@@ -1,4 +1,4 @@
-// Session-cookie API client for the v2 backend.
+// Session-cookie API client for the backend.
 //
 // Every request sends `credentials: "include"` so the `sessionid` cookie rides
 // along; unsafe methods attach the `X-CSRFToken` header read from the

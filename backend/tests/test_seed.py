@@ -1,8 +1,8 @@
 """
-P1 seed verification — runs the real seed_kc (the Kessler County world) to lock in
+Seed verification — runs the real seed_kc (the Kessler County world) to lock in
 idempotency, the date rebase, and universal address resolvability.
 
-Parses the full ~20k-row KC CSV, so it is the slow test in the suite; kept minimal.
+Parses the full ~20k-row KC CSV, so it is the slow test in the suite; deliberately minimal.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def test_seed_kc_idempotent_and_date_rebased():
     # The subsampled town universe, not the full CSV.
     assert 2_000 < n_prop <= N_CLUSTERS * ROWS_PER_CLUSTER
     assert n_sale > 0
-    # Personas became registered users (no prospects in v2).
+    # All personas are registered users, prospect archetypes included.
     assert User.objects.filter(email__startswith="kc_buyer_").count() == 15
     assert User.objects.filter(email__startswith="kc_prospect_").count() == 25
 
@@ -64,8 +64,9 @@ def test_seed_kc_idempotent_and_date_rebased():
 @pytest.mark.django_db
 def test_seed_kc_addresses_resolve():
     """Every seeded property is reachable by typing its address (the demo's core
-    promise): no legacy `kc:` norms remain, and a listing's own address resolves
-    through BOTH the dedup lookup and the geo resolver the rank endpoint uses."""
+    promise): no unresolvable `kc:` placeholder norms exist, and a listing's own
+    address resolves through both the dedup lookup and the geo resolver the rank
+    endpoint uses."""
     call_command("seed_kc")
     assert not Property.objects.filter(county_fips="53033", address_norm__startswith="kc:").exists()
 
@@ -154,7 +155,7 @@ def test_seed_kc_content_gate_compatible():
 
 @pytest.mark.django_db
 def test_seed_kc_hero_divergence():
-    """The load-bearing demo guarantee: ONE listing, four engineered outcomes.
+    """The load-bearing demo guarantee: one listing, four engineered outcomes.
     assess_deal is deterministic (LLM-free), so drift breaks CI, not the recording."""
     call_command("seed_kc")
     flag = _flagship()

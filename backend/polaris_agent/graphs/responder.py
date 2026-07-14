@@ -1,34 +1,32 @@
 """
-Graph 2 — Away-assistant responder (architecture §5, §8, §12; revisions 2026-07-03).
+The away-assistant responder graph.
 
-The presence-gated away-cover chatbot, built as a two-stage airlock `StateGraph`. It is
+A presence-gated away-cover chatbot, built as a two-stage airlock `StateGraph`. It is
 invoked from an Inngest step (the `chat/inbound` handler) after the grace window, and
-makes **one** reply per turn. There is no fixed buyer/seller role and no bound listing:
-`stance` (buy_side / sell_side / neutral) is derived from OWNERSHIP of the focal listing
-and only selects which assessment runs + which mandate Stage 1 reasons from.
+makes one reply per turn. There is no fixed buyer/seller role and no bound listing:
+`stance` (buy_side / sell_side / neutral) is derived from ownership of the focal listing
+and only selects which assessment runs and which mandate Stage 1 reasons from.
 
-The generalized front half + the unchanged airlock spine (revisions §auto-responder):
-
-  screen (Haiku)   → refuse+escalate on suspected injection/manipulation
+  screen (Haiku)   → refuse + escalate on suspected injection/manipulation
   triage (Haiku)   → classify intent → route the conditional assess
-  assess (engine)  → deterministic deal math for questions AND offers on the focal listing
-  DECIDE (Stage 1) → PRIVATE ctx (mandate/assessment/deal state) → CLOSED decision
+  assess (engine)  → deterministic deal math for questions and offers on the focal listing
+  decide (Stage 1) → private ctx (mandate/assessment/deal state) → closed decision
   policy gate      → deterministic: offer ∈ mandate bound + monotonic concession,
                      accept only vs a recorded in-bound offer, fields ⊆ whitelist;
                      share flags resolved into engine-rendered figure lines
   no_reply         → contentless inbound: end silently (no message, no notification)
-  DRAFT (Stage 2)  → PUBLIC-only ctx (transcript + public facts + share lines) → body
+  draft (Stage 2)  → public-only ctx (transcript + public facts + share lines) → body
   output check     → deterministic: no literal limit leak + human-voice style gate;
-                     ONE retry with the violation fed back, then escalate
+                     one retry with the violation fed back, then escalate
   commit gate      → auto_send → the DB commit gate; draft_for_approval → draft +
-                     notify; `accept` ALWAYS drafts (the principal signs)
+                     notify; `accept` always drafts (the principal signs)
 
 Stage 2 never receives any mandate, so it cannot voice a limit it never held — and the
-output check scans the UNION of every private limit the principal holds, so "never leak a
-limit" holds regardless of stance. The real guarantees live in the deterministic gates
-(disclosure.py) + the DB commit gate (chat.responder_service); this module orchestrates
-and narrates. Engine tools are called deterministically in `assess` (not exposed as LLM
-tools) — the same "engine scores, LLM narrates" collapse as Graph 3.
+output check scans the union of every private limit the principal holds, so "never leak
+a limit" holds regardless of stance. The real guarantees live in the deterministic gates
+(disclosure.py) and the DB commit gate (chat.responder_service); this module orchestrates
+and narrates. Engine tools are called deterministically in `assess`, never exposed to the
+LLM: the engine scores, the LLM narrates.
 """
 
 from __future__ import annotations
@@ -241,7 +239,7 @@ def _private_block(state: ResponderState) -> str:
 
 # ---- Nodes ---------------------------------------------------------------------
 async def _screen(state: ResponderState) -> dict:
-    """Haiku injection/manipulation screen on the inbound (§12 layer 4)."""
+    """Haiku injection/manipulation screen on the inbound."""
     inbound_body = (state.get("inbound") or {}).get("body", "")
     try:
         model = get_model("bulk").with_structured_output(ScreenVerdict)
@@ -261,8 +259,8 @@ async def _screen(state: ResponderState) -> dict:
 
 
 async def _triage(state: ResponderState) -> dict:
-    """Classify the inbound intent (the only LLM step in the generalized front half).
-    Stance + focal listing are already resolved deterministically in `responder_plan`."""
+    """Classify the inbound intent (the only LLM step in the front half). Stance +
+    focal listing are already resolved deterministically in `responder_plan`."""
     inbound_body = (state.get("inbound") or {}).get("body", "")
     try:
         model = get_model("bulk").with_structured_output(TriageVerdict)
@@ -282,7 +280,7 @@ async def _triage(state: ResponderState) -> dict:
 
 
 async def _assess(state: ResponderState) -> dict:
-    """Deterministic deal math — ONLY reached for an offer on a specific listing. Buy-side
+    """Deterministic deal math for substantive messages about the focal listing. Buy-side
     → the wholesale verdict; sell-side → market value + comps to defend the price."""
     tr = dict(state.get("tool_results") or {})
     focal_id = state.get("focal_listing_id")
@@ -294,7 +292,7 @@ async def _assess(state: ResponderState) -> dict:
 
 
 async def _decide(state: ResponderState) -> dict:
-    """STAGE 1 — PRIVATE context in, CLOSED structured action out. No prose."""
+    """Stage 1: private context in, closed structured action out. No prose."""
     model = get_model("workhorse").with_structured_output(ResponderDecision)
     deal_stage = (state.get("deal") or {}).get("stage")
     system = await prompt_store.compose_responder_decide(state.get("stance", "neutral"), deal_stage)
@@ -318,9 +316,9 @@ async def _decide(state: ResponderState) -> dict:
 
 
 def _gate(state: ResponderState) -> dict:
-    """Deterministic policy gate (§12 layer 2). Model proposes; code disposes. On pass,
-    resolve the share flags into engine-rendered figure lines for Stage 2 — the only
-    path by which numbers cross the airlock."""
+    """Deterministic policy gate: the model proposes, code disposes. On pass, resolve
+    the share flags into engine-rendered figure lines for Stage 2 — the only path by
+    which numbers cross the airlock."""
     decision = state["decision"]
     ok, reason = policy_gate(
         decision,
@@ -348,7 +346,7 @@ async def _no_reply(state: ResponderState) -> dict:
 
 
 async def _draft(state: ResponderState) -> dict:
-    """STAGE 2 — PUBLIC-only context in, prose out. NO mandate in this context. The
+    """Stage 2: public-only context in, prose out. No mandate in this context — the
     only numbers available are the gate-approved, engine-rendered `share_lines`."""
     decision = state["decision"]
     model = get_model("workhorse")
@@ -384,9 +382,9 @@ async def _draft(state: ResponderState) -> dict:
 
 
 def _validate(state: ResponderState) -> dict:
-    """Deterministic output check (§12 layer 5): no literal leak of ANY private limit,
-    plus the human-voice style gate. One retry with the violation fed back, then
-    escalate — a style slip costs a redraft, never a robot message."""
+    """Deterministic output check: no literal leak of any private limit, plus the
+    human-voice style gate. One retry with the violation fed back, then escalate —
+    a style slip costs a redraft, never a robot message."""
     body = (state.get("drafted") or {}).get("body", "")
     ok, reason = output_check(body, state.get("private_limits") or [], state["decision"])
     if ok:
@@ -397,8 +395,8 @@ def _validate(state: ResponderState) -> dict:
 
 
 async def _escalate(state: ResponderState) -> dict:
-    """Set status + notify the principal; post NOTHING to the counterparty (§5). The
-    notification leads with WHO reached out and what they need; the decide-stage
+    """Set status + notify the principal; post nothing to the counterparty. The
+    notification leads with who reached out and what they need; the decide-stage
     `private_rationale` goes to the owner-only audit log, not the headline."""
     decision = state.get("decision") or {}
     who = state.get("counterparty_name") or "The counterparty"
@@ -434,9 +432,9 @@ def _accept_recommendation(state: ResponderState) -> str:
 
 
 async def _commit(state: ResponderState) -> dict:
-    """Send gate (§5). auto_send → the DB commit gate; draft_for_approval → draft +
-    notify. `accept` ALWAYS drafts regardless of autonomy — the principal signs a deal,
-    the agent never closes alone."""
+    """Send gate. auto_send → the DB commit gate; draft_for_approval → draft +
+    notify. `accept` always drafts regardless of autonomy — the principal signs a
+    deal, the agent never closes alone."""
     decision = state["decision"]
     body = (state.get("drafted") or {}).get("body", "")
     autonomy = state.get("autonomy", "draft_for_approval")
@@ -541,8 +539,8 @@ def build_responder_graph():
     g.add_edge("commit", END)
     g.add_edge("no_reply", END)
     g.add_edge("escalate", END)
-    # No checkpointer: Graph 2 is one-shot; durability = Inngest retries + message
-    # idempotency, not the checkpoint (architecture §9b).
+    # No checkpointer: the responder is one-shot; durability = Inngest retries +
+    # message idempotency, not the checkpoint.
     return g.compile()
 
 

@@ -1,32 +1,31 @@
 """
-Auto-responder invariant core (architecture §4.5/§5) — the "exactly one autonomous
-reply" guarantee, ported from v1 with the field swap (author-triple → `kind`+`sender`).
+Auto-responder invariant core — the "exactly one autonomous reply" guarantee.
 
-Deliberately **pure and synchronous** so the invariant is unit-testable without Inngest,
-LangGraph, or a live socket. The LLM turn (Graph 2 · P4) runs *before and outside* the
-commit gate; only this critical section is locked.
+Deliberately pure and synchronous so the invariant is unit-testable without Inngest,
+LangGraph, or a live socket. The LLM turn runs before and outside the commit gate;
+only this critical section is locked.
 
-The invariant is a DATABASE guarantee, not agent logic. Three layers, only the last is
-the guarantee (architecture §5):
-  1. Debounce (Inngest grace) — avoids wasted work; lives in the P4 handler.
+The invariant is a database guarantee, not agent logic. Three layers, only the last is
+the guarantee:
+  1. Debounce (Inngest grace) — avoids wasted work; lives in the inbound handler.
   2. Re-check — presence + cap re-read before the turn; avoids wasted tokens.
-  3. **Commit gate (here)** — one txn, `pg_advisory_xact_lock(chat_id)`, that re-checks
+  3. Commit gate (here) — one txn, `pg_advisory_xact_lock(chat_id)`, that re-checks
      presence-absent, re-checks the reply cap, and inserts the message with `dedup_key`
      under `ON CONFLICT DO NOTHING`. A retried Inngest step recomputes the same
      `dedup_key` → the insert is a silent no-op → never a second message.
 
-**Sender-based cap (2-party ⇒ unambiguous):** "agent messages with `sender=principal`
-since the last human message with `sender=principal` < N." The **principal is the OTHER
-member** (the human the agent covers for). Human takeover needs no special code: the
+Sender-based cap (2-party ⇒ unambiguous): "agent messages with `sender=principal`
+since the last human message with `sender=principal` < N." The principal is the other
+member (the human the agent covers for). Human takeover needs no special code: the
 principal's own next human message zeroes the count (its `sender` matches); the
 counterparty's messages never reset it (different `sender`) — the other side can't farm
-extra replies. `author_side` is gone entirely.
+extra replies.
 
-**N is per-user (revisions 2026-07-04):** `UserProfile.agent_reply_cap` (default 3),
-resolved from the **principal's** profile. This bounds the agent↔agent away-cover loop:
-after an agent reply is sent, the handler re-arms the counterparty's away-agent, so both
-sides converse until each hits *its own* cap, then the next inbound-while-away escalates.
-If a human never speaks, "last same-side human" is absent ⇒ the cap counts all-time agent
+N is per-user: `UserProfile.agent_reply_cap` (default 6), resolved from the
+principal's profile. This bounds the agent↔agent away-cover loop: after an agent reply
+is sent, the handler re-arms the counterparty's away-agent, so both sides converse
+until each hits its own cap, then the next inbound-while-away escalates. If a human
+never speaks, "last same-side human" is absent ⇒ the cap counts all-time agent
 messages against a fixed N → guaranteed termination at ≈ 2N agent turns.
 """
 
@@ -39,13 +38,13 @@ from django.utils import timezone
 
 log = logging.getLogger(__name__)
 
-# Fallback N when the principal has no profile. Raised 3 → 6 (2026-07-08): 3 was a
-# pre-screen cap; a propose/counter exchange needs headroom before handing to the human.
+# Fallback N when the principal has no profile — enough headroom for a propose/counter
+# exchange before handing to the human.
 DEFAULT_REPLY_CAP = 6
 
 
 def dedup_key(chat_id: int, inbound_message_id: int) -> str:
-    """The idempotency key for one autonomous reply to one inbound (architecture §5)."""
+    """The idempotency key for one autonomous reply to one inbound."""
     return f"autoreply:{chat_id}:{inbound_message_id}"
 
 
@@ -70,10 +69,10 @@ def _principal_cap(principal_id: int) -> int:
 
 def reply_cap_reached(chat_id: int, principal_id: int, *, n: int | None = None) -> bool:
     """Has the principal's agent already replied `n` times since the principal's last
-    human message? `n=None` resolves the principal's own `agent_reply_cap` (default 3).
-    The cap is a QUERY, not a stored flag — recomputed fresh (and inside the commit txn)
-    so it's correct under retries and concurrency. The counterparty's messages don't reset
-    it (their `sender` differs)."""
+    human message? `n=None` resolves the principal's own `agent_reply_cap`. The cap is
+    a query, not a stored flag — recomputed fresh (and inside the commit txn) so it's
+    correct under retries and concurrency. The counterparty's messages don't reset it
+    (their `sender` differs)."""
     from .models import Message
 
     if n is None:
@@ -102,10 +101,10 @@ def log_action(
     private_rationale: str | None = None,
     payload: dict | None = None,
 ) -> None:
-    """Append-only audit (the away-agent's private reasoning trail) → `ai.AgentActionLog`
-    (added P4). `private_rationale` is folded into `payload` and is owner-only — it never
-    crosses the disclosure boundary. The lazy import stays a defensive no-op if the `ai`
-    app is ever unavailable, so the commit gate never fails on the audit write."""
+    """Append-only audit (the away-agent's private reasoning trail) → `ai.AgentActionLog`.
+    `private_rationale` is folded into `payload` and is owner-only — it never crosses
+    the disclosure boundary. The lazy import stays a defensive no-op if the `ai` app is
+    ever unavailable, so the commit gate never fails on the audit write."""
     try:
         from ai.models import AgentActionLog
     except ImportError:
@@ -271,10 +270,10 @@ def persist_draft(
     private_rationale: str | None = None,
     approval_context: dict | None = None,
 ) -> dict:
-    """Send-gate for `draft_for_approval` autonomy (architecture §5): the auto-responder
-    only fires when the human is absent, so an approval-required level can't be satisfied
-    in-flight. Persist a `draft` message + an approval notification and END — that draft
-    IS the awaiting-approval object; the human approving/sending it later is the takeover.
+    """Send gate for `draft_for_approval` autonomy: the auto-responder only fires when
+    the human is absent, so an approval-required level can't be satisfied in-flight.
+    Persist a `draft` message + an approval notification and end — that draft is the
+    awaiting-approval object; the human approving/sending it later is the takeover.
     Nothing is parked."""
     from notifications.models import Notification
 
@@ -323,11 +322,11 @@ def escalate(
     terminal: str | None = None,
     private_rationale: str | None = None,
 ) -> dict:
-    """Hand to the human WITHOUT posting anything to the counterparty (architecture §5):
-    set the chat status + a notification. No cross-boundary message on escalation.
+    """Hand to the human without posting anything to the counterparty: set the chat
+    status + a notification. No cross-boundary message on escalation.
     `status=escalated` pauses auto-reply for the chat (no re-escalation spam);
     `escalated_for` records whose return reopens it (chat.services.post_human_message).
-    No terminal by default (2026-07-08) — an escalated chat is paused, not dead."""
+    No terminal by default — an escalated chat is paused, not dead."""
     from notifications.models import Notification
 
     from .models import Chat

@@ -1,3 +1,3 @@
-"""Catalog admin registrations — added in this app's phase."""
+"""Catalog admin registrations (none yet)."""
 
 from __future__ import annotations  # noqa: F401

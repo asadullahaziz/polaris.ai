@@ -1,6 +1,6 @@
 """
 ASGI lifespan handler — eagerly opens the shared checkpointer pool at startup
-and closes it at shutdown (P0.8).
+and closes it at shutdown.
 
 Uvicorn emits lifespan events; some servers (e.g. Daphne) do not. The pool is
 therefore *also* opened lazily on first use in polaris_agent.checkpointer, so
@@ -24,7 +24,7 @@ async def lifespan_app(scope, receive, send):
     while True:
         message = await receive()
         if message["type"] == "lifespan.startup":
-            # Eagerly open the pool, but NEVER make startup fatal: get_checkpointer()
+            # Eagerly open the pool, but never make startup fatal: get_checkpointer()
             # opens lazily on first use, so a transient DB hiccup here must not crash
             # the server (uvicorn --lifespan on treats startup.failed as fatal).
             try:

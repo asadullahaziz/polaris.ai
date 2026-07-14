@@ -1,7 +1,7 @@
 """
 /api/deals/ (mini CRM REST) — list scoping (only a party's own deals), side/stage/
 listing filters, the serialized row shape, PATCH stage override (membership-checked),
-and 404/400 behavior. Follows the plain-dict + APIClient style of test_chat.py.
+and 404/400 behavior.
 """
 
 from __future__ import annotations

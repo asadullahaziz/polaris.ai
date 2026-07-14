@@ -1,5 +1,5 @@
 """
-Notifications REST (P3) — the in-app notification feed the UI polls, plus mark-read.
+Notifications REST — the in-app notification feed the UI polls, plus mark-read.
 In-app only (no email/SMS); one table, four trigger types (inbound_message /
 outreach_received / approval_required / escalation).
 """

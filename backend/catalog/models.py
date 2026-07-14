@@ -1,22 +1,15 @@
 """
-catalog — the domain's shared nouns (v2).
+Core domain models: Property, Listing, BuyBox, Sale, Mandate.
 
-Consolidates v1's `catalog` (Property/Listing/ListingProperty/ListingMedia),
-`buyers` (BuyBox/BuyBoxGeo, and Purchase → **Sale**), and `agent_context`'s
-`Mandate`. Two v2 changes fold in here:
+Property is the canonical physical asset — one row per real-world home; the seeded
+comp universe backing valuation and assess_deal. Listing is a seller's intent to
+sell one or more properties (single/package/portfolio via ListingProperty) — the
+schema is bundle-native. BuyBox holds an investor's acquisition criteria, Sale a
+buyer's purchase history (the behavioral ranking signal), and Mandate the private
+per-deal parameters.
 
-  * **Registered users only** — `Sale` (was `Purchase`) drops the buyer-or-prospect
-    duality: a single `buyer → users.User`, no `buyer_prospect`, no exactly-one CHECK.
-  * **Governance knobs off Mandate** — `Mandate` loses `autonomy`/`auto_reply`
-    (now user-level on `UserProfile`); it stays pure per-deal parameters.
-
-`property` = the canonical physical asset (one row per real-world home; the KC seed
-loads ~20k here as the comp universe backing valuation/assess_deal). `listing` =
-a user's intent to dispo, covering one (single) or many (package/portfolio)
-properties via the M2M `listing_property` — the schema is bundle-native.
-
-TEXT → TextField (app-enforced enums). CHAR(n) → CharField(max_length=n).
-NUMERIC(p,s) → DecimalField. Geography → GeoDjango fields (GiST index on by default).
+Enums are app-enforced TextField choices. GeoDjango geography fields carry a GiST
+index by default.
 """
 
 from __future__ import annotations
@@ -26,7 +19,7 @@ from django.contrib.gis.db import models
 from django.contrib.postgres.fields import ArrayField
 
 # ---------------------------------------------------------------------------
-# Enumerations (app-enforced, mirroring the DDL's TEXT columns)
+# Enumerations (app-enforced)
 # ---------------------------------------------------------------------------
 PROPERTY_TYPES = ["sfr", "duplex", "multifamily", "condo", "land"]
 BUNDLE_TYPES = [("single", "single"), ("package", "package"), ("portfolio", "portfolio")]
@@ -70,7 +63,7 @@ DISPOSITIONS = [
 # Property / Listing / ListingProperty / ListingMedia
 # ---------------------------------------------------------------------------
 class Property(models.Model):
-    """The canonical physical asset. ONE row per real-world property (dedup by
+    """The canonical physical asset. One row per real-world property (dedup by
     parcel+county, address fallback). Matched/comp properties are shared read-only
     references — never mutated by the listing flow (protects the comp basis)."""
 
@@ -95,11 +88,11 @@ class Property(models.Model):
     grade = models.SmallIntegerField(null=True, blank=True)  # KC 1–13
     waterfront = models.BooleanField(null=True, blank=True)  # comp gate + premium
     view_rating = models.SmallIntegerField(null=True, blank=True)  # KC 0–4
-    arv = models.DecimalField(  # DERIVED via comps (matching_and_data §3)
+    arv = models.DecimalField(  # derived from comps
         max_digits=12, decimal_places=2, null=True, blank=True
     )
     last_sale_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    last_sale_date = models.DateField(null=True, blank=True)  # REBASED (§4.4)
+    last_sale_date = models.DateField(null=True, blank=True)  # date-rebased by the seed
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -124,11 +117,11 @@ class Listing(models.Model):
 
     seller = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,  # DDL: no ON DELETE → protect the referenced user
+        on_delete=models.PROTECT,
         related_name="listings",
     )
-    title = models.TextField(blank=True, default="")  # v2 add
-    description = models.TextField(blank=True, default="")  # v2 add
+    title = models.TextField(blank=True, default="")
+    description = models.TextField(blank=True, default="")
     asking_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     bundle_type = models.TextField(default="single", choices=BUNDLE_TYPES)
     status = models.TextField(default="draft", choices=LISTING_STATUSES)
@@ -148,7 +141,7 @@ class Listing(models.Model):
 
 class ListingProperty(models.Model):
     """M2M listing↔property. A property may appear in several listings (no per-user
-    uniqueness); it just can't appear twice in ONE listing (the composite PK)."""
+    uniqueness); it just can't appear twice in one listing (the composite PK)."""
 
     pk = models.CompositePrimaryKey("listing_id", "property_id")
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE)
@@ -186,7 +179,7 @@ class ListingMedia(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# BuyBox / BuyBoxGeo (moved from v1 `buyers`, buyer → users.User)
+# BuyBox / BuyBoxGeo
 # ---------------------------------------------------------------------------
 class BuyBox(models.Model):
     """An investor's acquisition criteria. A buyer has many; one may be primary."""
@@ -268,8 +261,7 @@ class BuyBoxGeo(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# Sale (was v1 `buyers.Purchase`) — the primary behavioral ranking signal.
-# Duality removed: a single `buyer → users.User`.
+# Sale — the primary behavioral ranking signal.
 # ---------------------------------------------------------------------------
 class Sale(models.Model):
     """A past purchase by a registered buyer: the behavioral ranking signal."""
@@ -281,13 +273,13 @@ class Sale(models.Model):
     )
     property = models.ForeignKey(
         Property,
-        on_delete=models.PROTECT,  # DDL: no ON DELETE
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="sales",
     )
 
-    # denormalized attrs — OPTIONAL when property is set (read via the join); kept for
+    # denormalized attrs — optional when property is set (read via the join); kept for
     # sales with no linked property row (external history).
     price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     property_type = models.TextField(null=True, blank=True)
@@ -296,7 +288,7 @@ class Sale(models.Model):
     state_code = models.CharField(max_length=2, null=True, blank=True)
     zip = models.CharField(max_length=5, null=True, blank=True)
     geom = models.PointField(geography=True, srid=4326, null=True, blank=True)
-    purchased_at = models.DateField(null=True, blank=True)  # REBASED (§4.4)
+    purchased_at = models.DateField(null=True, blank=True)  # date-rebased by the seed
     cash_buyer = models.BooleanField(null=True, blank=True)
     disposition = models.TextField(null=True, blank=True, choices=DISPOSITIONS)
     source = models.TextField(null=True, blank=True)
@@ -313,11 +305,10 @@ class Sale(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# Mandate (moved from v1 `agent_context`) — pure per-deal parameters.
-# Governance knobs (autonomy / auto_reply) moved to UserProfile (v2).
+# Mandate — pure per-deal parameters (governance knobs live on UserProfile).
 # ---------------------------------------------------------------------------
 class Mandate(models.Model):
-    """Governs ONE deal context: a seller's listing OR a buyer's buy-box (XOR)."""
+    """Governs one deal context: a seller's listing XOR a buyer's buy-box."""
 
     listing = models.ForeignKey(
         Listing,

@@ -1,19 +1,18 @@
 """
-CopilotConsumer — Graph 1 over the WebSocket (ports v1 `conversations/copilot.py`,
-rewired for `ai.*` + confirm-every-write).
+CopilotConsumer — the copilot agent over the WebSocket.
 
 One socket per session; identity from AuthMiddlewareStack (session cookie →
 scope["user"]). The ReAct copilot agent is built once per connection (bound to the
 user + their global agent_instructions). Each turn:
   1. persist the human message (system of record: `ai_message`),
-  2. rehydrate the transcript from `ai_message` (architecture §9b) — block-structured
-     since 2026-07-10, so past tool calls/results ARE model context (windowed in dal),
+  2. rehydrate the transcript from `ai_message` — block-structured, so past tool
+     calls/results are model context (windowed in dal),
   3. stream the assistant's tokens (`copilot.token`) + tool activity (`copilot.tool`
      start/end with a human label); a new LLM call within the turn streams a "\n\n"
      separator first so segments never glue together,
-  4. if a WRITE tool raises a confirm interrupt, PAUSE: emit `copilot.confirm` and wait
+  4. if a write tool raises a confirm interrupt, pause: emit `copilot.confirm` and wait
      for the client's `copilot.confirm_response`, then resume with `Command(resume=…)`;
-  5. once the turn completes with no pending interrupt, persist the turn's BLOCKS
+  5. once the turn completes with no pending interrupt, persist the turn's blocks
      (assistant segments + tool results, from the graph state) and emit `copilot.done`
      (with an auto-title). The flattened token buffer is only the fallback persist.
 
@@ -74,7 +73,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         )
         await self.accept()
         await self._send("copilot.ready", {"user": user.get_username()})
-        # Join the per-user group so the outreach fan-out (P5) can push progress ticks +
+        # Join the per-user group so the outreach fan-out can push progress ticks +
         # the final summary into this chat. Non-fatal + bounded: a channel-layer hiccup
         # must never take down the chat (the group only carries secondary pushes).
         try:
@@ -95,7 +94,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _send(self, type_: str, data: dict) -> None:
         await self.send(text_data=json.dumps({"type": type_, "data": data}))
 
-    # ---- Channel-layer handlers: outreach fan-out (P5) → this socket ----------------
+    # ---- Channel-layer handlers: outreach fan-out → this socket ---------------------
     async def outreach_progress(self, event):
         await self._send("outreach.progress", event.get("data", {}))
 
@@ -151,9 +150,8 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _pump(self, inp, cfg: dict, buf: list[str], conv_id: int):
         """Stream one (re)entry of the agent. Forwards NL tokens + tool activity
         (`copilot.tool` start/end with a human label); a new LLM call after the first
-        streams a "\\n\\n" separator so segments never glue ("sending.Got their IDs").
-        Returns the tuple of pending Interrupts if the turn paused for a write
-        confirmation, else None."""
+        streams a "\\n\\n" separator so segments never glue together. Returns the tuple
+        of pending Interrupts if the turn paused for a write confirmation, else None."""
         unset = object()  # distinguishes "no LLM call seen this pump" from an id of None
         last_msg_id = unset
         async for mode, data in self.agent.astream(
@@ -217,7 +215,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
         await dal.save_ai_message(conv_id, role="user", content=body)
         history = await dal.load_transcript(conv_id)  # includes the new human message
         # A stable per-turn thread_id: the checkpoint persists across the confirm pause,
-        # then the next turn (new len) starts fresh scratch (architecture §9b).
+        # then the next turn (new len) starts fresh scratch.
         cfg = {
             "configurable": {
                 "thread_id": f"copilot:{conv_id}:{len(history)}",
@@ -225,7 +223,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             }
         }
         buf: list[str] = []
-        # Tracing rides a per-pump COPY of cfg (callback_config) — `cfg` itself stays
+        # Tracing rides a per-pump copy of cfg (callback_config) — `cfg` itself stays
         # bare because _enter_pending persists it as JSON across the confirm pause.
         with observability.trace_turn(
             "copilot-turn",
@@ -289,7 +287,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
             await self._send("copilot.error", {"detail": "no pending confirmation"})
             return
         self._pending = None
-        # Record the decision as a durable, model-invisible transcript row BEFORE re-pumping,
+        # Record the decision as a durable, model-invisible transcript row before re-pumping,
         # so it lands between the user's request and the assistant's reply on rehydrate.
         await dal.save_confirm_outcome(
             p["conv_id"], p["value"], "approved" if approved else "declined"
@@ -348,7 +346,7 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _enter_pending(
         self, conv_id, cfg, buf, needs_title, first_body, interrupts, persisted_len=None
     ) -> None:
-        # Persist the blocks produced so far BEFORE parking, so the timeline stays in
+        # Persist the blocks produced so far before parking, so the timeline stays in
         # order (preamble → tool call → confirm card → …) and an expired confirm keeps
         # its preamble. A dangling tool call (paused, no result yet) is fine — the
         # transcript loader strips broken pairs on rehydrate.
@@ -375,11 +373,11 @@ class CopilotConsumer(AsyncWebsocketConsumer):
     async def _finalize(
         self, conv_id, buf, needs_title, first_body, cfg=None, persisted_len=None
     ) -> None:
-        # Primary: persist the turn's remaining BLOCKS (assistant segments + tool
+        # Primary: persist the turn's remaining blocks (assistant segments + tool
         # results) from the graph state — this is what gives the model tool memory on
         # later turns and the UI its activity chips on rehydrate. Fallback: the
-        # flattened token buffer (a pre-deploy parked confirm with no persisted_len, or
-        # a state read hiccup with nothing block-persisted yet).
+        # flattened token buffer (a parked confirm with no persisted_len, or a state
+        # read hiccup with nothing block-persisted yet).
         msg_id = None
         blocks_landed = False
         if cfg is not None and persisted_len is not None:

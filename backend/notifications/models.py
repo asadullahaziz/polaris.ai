@@ -1,10 +1,9 @@
 """
-notifications — the in-app notification feed (data_model_decisions Decision 7).
+notifications — the in-app notification feed.
 
 In-app only (no email/SMS). One table covers all four triggers: a new inbound
 message, a new outreach received, an agent action awaiting approval, and an
-escalation / handback. v2 rewire: the `conversation` FK now targets `chat.Chat`
-(the human 1:1 chat) instead of the fused v1 conversation table.
+escalation / handback.
 """
 
 from __future__ import annotations

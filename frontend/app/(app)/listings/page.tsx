@@ -88,7 +88,7 @@ export default function ListingsPage() {
     queryFn: listListings,
   });
 
-  // The marketplace response is a superset (own listings in ANY status + others'
+  // The marketplace response is a superset (own listings in any status + others'
   // active ones), so "My listings" is a client-side cut of the same query.
   const mine = (data ?? []).filter((l) => l.seller.id === me?.id);
   const shown = tab === "mine" ? mine : data ?? [];

@@ -1,12 +1,10 @@
 """
-Disclosure gates — pure, LLM-free (architecture §12). The layers that make a *fooled*
-model harmless: `policy_gate` (a proposed decision must sit within the focal mandate's
-bound for the stance + the closed whitelist) and `output_check` (no literal limit leaks
-in the drafted body, scanned over the UNION of the principal's private limits).
-
-v2 (P4): `role → stance`; `output_check` takes the union of limit values (a list), not a
-single mandate — the away-assistant may hold several mandates at once, and "never leak a
-limit" must hold across all of them regardless of stance.
+Disclosure gates — pure, LLM-free. The layers that make a fooled model harmless:
+`policy_gate` (a proposed decision must sit within the focal mandate's bound for
+the stance + the closed whitelist) and `output_check` (no literal limit leaks in
+the drafted body, scanned over the union of the principal's private limits — the
+away-assistant may hold several mandates at once, and "never leak a limit" must
+hold across all of them regardless of stance).
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ def test_policy_gate_allows_clean_decision():
 
 
 def test_policy_gate_rejects_interest_level_since_removed():
-    # interest_level left the whitelist (2026-07-08): the action carries the signal.
+    # interest_level is not in the whitelist: the action itself carries the signal.
     decision = {"action": "qualify", "disclosed_fields": {"interest_level": "high"}}
     ok, reason = policy_gate(decision, BUYER_MANDATE, "buy_side")
     assert ok is False and "whitelist" in reason
@@ -97,7 +95,7 @@ def test_output_check_blocks_seller_floor_leak():
 
 def test_output_check_scans_union_of_all_limits():
     # A principal who is both a seller (floor 700k) and a buyer (ceiling 480k): a leak of
-    # EITHER value is caught, regardless of which stance drove the turn.
+    # either value is caught, regardless of which stance drove the turn.
     decision = {"disclosed_fields": {}}
     assert output_check("around 700k", BOTH_LIMITS, decision)[0] is False
     assert output_check("no more than $480,000", BOTH_LIMITS, decision)[0] is False
@@ -115,7 +113,7 @@ def test_output_check_allows_offer_equal_to_limit_when_disclosed():
     assert output_check(body, BUYER_LIMITS, decision) == (True, None)
 
 
-# ---- negotiation rules (2026-07-08) --------------------------------------------
+# ---- negotiation rules ----------------------------------------------------------
 def test_propose_requires_offer_price():
     ok, reason = policy_gate(
         {"action": "propose", "disclosed_fields": {}}, BUYER_MANDATE, "buy_side"

@@ -1,13 +1,12 @@
 """
-catalog services — the write/query seam BOTH the REST API and (P2) the copilot's
-`dal` tools call, so the agent can do anything a user can do manually and stays in
-lockstep with the API.
+catalog services — the write/query seam shared by the REST API and the copilot's
+tools, so the agent can do anything a user can do manually and stays in lockstep
+with the API.
 
-Covers: address normalization + **fetch-existing property dedup** (never mutate a
+Covers: address normalization + fetch-existing property dedup (never mutate a
 matched Property — it's the comp basis), multi-property listing create/update, the
-per-listing Mandate get/set (deal settings), and **buy-box CRUD + inline deal-settings**
-(lifted here in P5 so the `/settings › Buy-boxes` REST and the copilot's buy-box tools
-share one seam — agent == API). Pure ORM, no LLM.
+per-listing Mandate get/set (deal settings), and buy-box CRUD with inline
+deal-settings. Pure ORM, no LLM.
 """
 
 from __future__ import annotations
@@ -138,7 +137,7 @@ _NEW_PROPERTY_FIELDS = (
 def attach_or_create_property(item: dict) -> Property:
     """Resolve one listing-property item to a Property row.
 
-    * `{"property_id": N}` → return the existing Property **unchanged** (comp basis).
+    * `{"property_id": N}` → return the existing Property unchanged (comp basis).
     * else `{"address": ..., <attrs>}` → find by normalized address (attach existing,
       unchanged) or create a new Property.
     """
@@ -243,10 +242,10 @@ def set_mandate_for_listing(listing: Listing, data: dict) -> dict:
 
 
 # --- buy-box CRUD (the buyer-side deal config; deal-settings inline) -----------
-# The `/settings › Buy-boxes` REST and the copilot's buy-box tools BOTH call these,
-# so the agent and the API stay in lockstep (lifted from the copilot dal in P5). The
-# input `fields` dict carries buy-box scalars + the inline deal-settings (ceiling_price/
-# must_haves/instructions, upserted onto the box's Mandate) + an optional single `geo`.
+# The `/settings › Buy-boxes` REST and the copilot's buy-box tools both call these,
+# so the agent and the API stay in lockstep. The input `fields` dict carries buy-box
+# scalars + the inline deal-settings (ceiling_price/must_haves/instructions,
+# upserted onto the box's Mandate) + an optional single `geo`.
 _BOX_SCALAR_FIELDS = (
     "name",
     "strategy",
@@ -294,9 +293,9 @@ def _num(v):
 
 
 def serialize_buy_box(box: BuyBox) -> dict:
-    """The public buy-box view (read shape shared by REST + copilot). Keeps the P2 keys
-    (`buy_box_id`, nested `mandate`, `n_geos`) and adds the full scalar set + `geos` so the
-    settings UI round-trips."""
+    """The public buy-box view (read shape shared by REST + copilot): `buy_box_id`,
+    nested `mandate`, `n_geos`, plus the full scalar set + `geos` so the settings UI
+    round-trips."""
     m = box.mandates.first()
     return {
         "buy_box_id": box.id,

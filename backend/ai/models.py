@@ -1,29 +1,25 @@
 """
-ai — the copilot's own tables + per-principal agent memory (v2 P2).
+Copilot chat tables, per-principal agent memory, and the outreach ledger.
 
-The copilot session lives in `ai_chat`/`ai_message`, kept **deliberately separate**
-from the human `chat` tables (revisions §polaris-ai): here you talk to *your* AI;
-`chat` is human↔human where the away-responder covers for you. Splitting the fused
-v1 `conversation` into `ai.*` (copilot) + `chat.*` (human) removes v1's kind-CHECK
-and the buyer/seller shape it carried.
+`AiChat`/`AiMessage` hold copilot sessions, deliberately separate from the human
+`chat` tables: here you talk to your own AI; `chat` is human↔human where the
+away-responder covers for you. `ai_message.role` is LLM-native
+(`user|assistant|system|tool`) so the transcript rehydrates straight into LangChain
+messages (dal).
 
-`ai_message.role` is LLM-native (`user|assistant|system|tool`) — no author_side, no
-CHECK — so the transcript rehydrates straight into LangChain messages (dal).
+`AgentActionLog` is the away-responder's private audit trail over a human `chat.Chat`
+— its `private_rationale` (folded into `payload`) is owner-only and never crosses the
+disclosure boundary. Written by `chat.responder_service.log_action` after every
+commit / draft / escalate.
 
-`AgentActionLog` (added P4) is the away-responder's PRIVATE audit trail over a human
-`chat.Chat` — its `private_rationale` (folded into `payload`) is owner-only and never
-crosses the disclosure boundary. Written by `chat.responder_service.log_action` after
-every commit / draft / escalate.
-
-`OutreachCampaign`/`OutreachRecipient` (added P5) are the seller's outreach ledger —
-one `launch_outreach_campaign` = one campaign over one or more listings → N **registered** buyers,
-each buyer paired with exactly the listing(s) they matched.
-`OutreachRecipient` IS the delivery ledger: a partial-unique on SENT rows guarantees a
-listing reaches each buyer at most once, ever, across campaigns (a cancelled proposal
-doesn't block a later legitimate send). v2 rewire: registered users only (prospects are
-gone), the opened thread is the ONE pair `chat.Chat` (opener posted as an agent message
-+ a `MessageAttachment(kind=listing)`, not a `subject_listing`), and the copilot chat the
-launch was fired from is an `ai.AiChat` (where progress ticks + the final summary land).
+`OutreachCampaign`/`OutreachRecipient` are the seller's outreach ledger — one
+`launch_outreach_campaign` = one campaign over one or more listings → N registered
+buyers, each paired with exactly the listing(s) they matched. `OutreachRecipient` is
+the delivery ledger: a partial-unique on sent rows guarantees a listing reaches each
+buyer at most once, ever, across campaigns (a cancelled proposal doesn't block a later
+legitimate send). The opener lands in the one pair `chat.Chat` as an agent message with
+`MessageAttachment(kind=listing)` rows; progress ticks + the final summary land in the
+`ai.AiChat` the launch was fired from.
 """
 
 from __future__ import annotations
@@ -34,7 +30,7 @@ from django.db import models
 # ai_chat lifecycle. Kept tiny — a copilot session is open until the user archives it.
 AI_CHAT_STATUSES = [("open", "open"), ("archived", "archived")]
 
-# LLM-native message roles (no author_side; the copilot is single-principal).
+# LLM-native message roles; the copilot is single-principal.
 AI_MESSAGE_ROLES = [
     ("user", "user"),
     ("assistant", "assistant"),
@@ -44,9 +40,8 @@ AI_MESSAGE_ROLES = [
 
 
 class AiChat(models.Model):
-    """A copilot session (v1 `conversation` kind='copilot'). Multi-session per user;
-    the sidebar orders by `-updated_at`. `title` is Haiku-auto-named from the first
-    message (NULL until named)."""
+    """A copilot session. Multi-session per user; the sidebar orders by `-updated_at`.
+    `title` is Haiku-auto-named from the first message (NULL until named)."""
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ai_chats"
@@ -74,14 +69,13 @@ class AiChat(models.Model):
 
 
 class AiMessage(models.Model):
-    """One BLOCK of the copilot transcript — the SYSTEM OF RECORD (architecture §9b):
-    graphs rehydrate from here, never from the LangGraph checkpoint. Block-structured
-    since 2026-07-10: each assistant LLM call is its own row (its tool calls in
-    `tool_calls` as a list), each tool result a role='tool' row (`tool_calls` = a dict
-    {kind:'tool_result', tool_call_id, name, label} with the result as `content`) — so
-    the model remembers past tool traffic and the UI renders activity chips on reopen.
-    Resolved confirm cards also live as role='tool' rows (dict kind='confirm_write'),
-    UI-only, never re-fed to the model."""
+    """One block of the copilot transcript — the system of record: graphs rehydrate
+    from here, never from the LangGraph checkpoint. Each assistant LLM call is its own
+    row (its tool calls in `tool_calls` as a list), each tool result a role='tool' row
+    (`tool_calls` = a dict {kind:'tool_result', tool_call_id, name, label} with the
+    result as `content`) — so the model remembers past tool traffic and the UI renders
+    activity chips on reopen. Resolved confirm cards also live as role='tool' rows
+    (dict kind='confirm_write'), UI-only, never re-fed to the model."""
 
     ai_chat = models.ForeignKey(AiChat, on_delete=models.CASCADE, related_name="messages")
     role = models.TextField(choices=AI_MESSAGE_ROLES)  # user | assistant | system | tool
@@ -100,9 +94,9 @@ class AiMessage(models.Model):
 
 
 class AgentMemory(models.Model):
-    """Per-principal long-term memory — PRIVATE, the system of record reached via the
-    copilot's read_memory/write_memory tools (NOT a LangGraph BaseStore, architecture
-    §9b). Namespace-scoped + recency-read so future chats stay consistent."""
+    """Per-principal long-term memory — private, reached via the copilot's
+    read_memory/write_memory tools (not a LangGraph BaseStore). Namespace-scoped +
+    recency-read so future chats stay consistent."""
 
     principal = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memories"
@@ -134,12 +128,12 @@ AGENT_ACTION_TYPES = [
 
 
 class AgentActionLog(models.Model):
-    """Append-only PRIVATE audit of the away-responder acting on a human `chat.Chat`
-    (architecture §5). Every commit / draft / escalate appends one row for the
-    **principal** (the user the agent covers for). `payload` carries the whitelisted
-    disclosure audit AND the Stage-1 `private_rationale` — which is owner-only and MUST
-    never be shown to the counterparty (it never crosses the airlock; this is where it
-    lives instead). Written by `chat.responder_service.log_action`."""
+    """Append-only private audit of the away-responder acting on a human `chat.Chat`.
+    Every commit / draft / escalate appends one row for the principal (the user the
+    agent covers for). `payload` carries the whitelisted disclosure audit and the
+    Stage-1 `private_rationale`, which is owner-only and NEVER shown to the
+    counterparty (it never crosses the airlock; this is where it lives instead).
+    Written by `chat.responder_service.log_action`."""
 
     principal = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="agent_actions"
@@ -169,7 +163,7 @@ class AgentActionLog(models.Model):
 
 
 # =====================================================================================
-# Outreach (P5) — the seller's buyer-discovery fan-out ledger (Graph 3).
+# Outreach — the seller's buyer-discovery fan-out ledger.
 # =====================================================================================
 CAMPAIGN_STATUSES = [
     ("awaiting_approval", "awaiting_approval"),
@@ -184,7 +178,7 @@ RECIPIENT_STATUSES = [
     ("failed", "failed"),
     ("cancelled", "cancelled"),
 ]
-# In-app only in v1/v2; kept for forward-compat (notifications are in-app only).
+# Only in_app is wired; the rest are reserved.
 CHANNELS = [
     ("in_app", "in_app"),
     ("sms", "sms"),
@@ -194,10 +188,10 @@ CHANNELS = [
 
 
 class OutreachCampaign(models.Model):
-    """One `launch_outreach_campaign` = one campaign → N buyers, each with the listing(s) they
-    matched (the per-(buyer, listing) sets live on the recipient rows), staged
+    """One `launch_outreach_campaign` = one campaign → N buyers, each with the listing(s)
+    they matched (the per-(buyer, listing) sets live on the recipient rows), staged
     `awaiting_approval` until the seller approves the batch (the send gate). `listing`
-    is set when the campaign covers exactly ONE listing (display convenience);
+    is set when the campaign covers exactly one listing (display convenience);
     NULL = multi-listing."""
 
     listing = models.ForeignKey(
@@ -212,7 +206,7 @@ class OutreachCampaign(models.Model):
     )
     # The copilot session this launch fired from — where the fan-out pushes progress ticks
     # + the final summary over the WS (`copilot_{seller}` group). NULL if launched outside
-    # the copilot. v2: `ai.AiChat`, not the fused v1 conversation.
+    # the copilot.
     copilot_ai_chat = models.ForeignKey(
         "ai.AiChat",
         on_delete=models.SET_NULL,
@@ -231,8 +225,7 @@ class OutreachCampaign(models.Model):
 
 
 class OutreachRecipient(models.Model):
-    """The DELIVERY LEDGER. v2: registered users only (prospects are gone), so
-    `recipient_user` is required and the buyer-or-prospect CHECK disappears. The SENT
+    """The delivery ledger. `recipient_user` is always a registered user. The sent-rows
     partial-unique is the ledger guarantee — a listing reaches each buyer once, ever."""
 
     campaign = models.ForeignKey(
@@ -254,7 +247,7 @@ class OutreachRecipient(models.Model):
     draft_body = models.TextField(null=True, blank=True)  # shown for approval; sent verbatim
     channel = models.TextField(default="in_app", choices=CHANNELS)
     status = models.TextField(default="pending", choices=RECIPIENT_STATUSES)
-    # The ONE pair chat this outreach opened (v2: chat.Chat, not a per-listing thread).
+    # The one pair chat this outreach opened.
     chat = models.ForeignKey(
         "chat.Chat",
         on_delete=models.SET_NULL,
@@ -268,7 +261,7 @@ class OutreachRecipient(models.Model):
     class Meta:
         db_table = "outreach_recipient"
         constraints = [
-            # Ledger guarantee — on SENT rows only (a cancelled proposal never blocks a
+            # Ledger guarantee — on sent rows only (a cancelled proposal never blocks a
             # later legitimate send).
             models.UniqueConstraint(
                 fields=["listing", "recipient_user"],

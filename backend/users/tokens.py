@@ -1,5 +1,5 @@
 """
-Hand-rolled signed tokens for email verification + password reset (auth design).
+Hand-rolled signed tokens for email verification + password reset.
 
 Both use `django.core.signing` (HMAC over SECRET_KEY) with distinct salts so a
 verification token can never be replayed as a reset token. The reset token is

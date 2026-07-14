@@ -1,4 +1,4 @@
-"""Ai websocket routes — the streamed copilot chat (Graph 1). Aggregated by config.routing."""
+"""Ai websocket routes — the streamed copilot chat. Aggregated by config.routing."""
 
 from __future__ import annotations
 

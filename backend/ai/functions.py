@@ -1,23 +1,23 @@
 """
-Outreach fan-out Inngest function (Graph 3 · P5; architecture §6/§9).
+Outreach fan-out Inngest function.
 
 Triggered by `outreach/approved` (emitted by the approve REST action + the copilot
-`launch_outreach_campaign` tool). This is the durable post-approval half of Graph 3 — the seller
-may close the tab; it outlives the copilot turn. It is deliberately **thin glue**: every
-guarantee (per-pair ledger, opener idempotency, one-chat-per-pair, one message per
-buyer) lives in `ai.outreach_service.send_to_buyer`, which is pure/sync and unit-tested
-without this dev server.
+`launch_outreach_campaign` tool). This is the durable post-approval half of outreach —
+the seller may close the tab; it outlives the copilot turn. It is deliberately thin
+glue: every guarantee (per-pair ledger, opener idempotency, one-chat-per-pair, one
+message per buyer) lives in `ai.outreach_service.send_to_buyer`, which is pure/sync and
+unit-tested without this dev server.
 
-Three jobs, split along the §9 boundary:
-  1. one durable step per BUYER → `send_to_buyer` (retries, concurrency) — one opener
+Three jobs:
+  1. one durable step per buyer → `send_to_buyer` (retries, concurrency) — one opener
      message per buyer covering every listing that buyer matched and the ledger allows;
-  2. **templated** progress ticks pushed to the seller's copilot chat over the WS channel
-     layer (`copilot_{seller}` group) — NO model call per tick;
+  2. templated progress ticks pushed to the seller's copilot chat over the WS channel
+     layer (`copilot_{seller}` group) — no model call per tick;
   3. exactly one final NL summary — one model narration (templated fallback), persisted as
      an assistant message in the copilot `ai.AiChat` and pushed as `outreach.summary`.
 
-For every buyer actually reached, emit **`chat/inbound {chat_id, inbound_message_id}`** so
-the P4 away-responder covers if the buyer is away (the opener is an inbound to their side).
+For every buyer actually reached, emit `chat/inbound {chat_id, inbound_message_id}` so
+the away-responder covers if the buyer is away (the opener is an inbound to their side).
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ async def _tick(seller_id: int, payload: dict) -> None:
 )
 async def outreach_fanout(ctx: inngest.Context) -> dict:
     campaign_id = ctx.event.data["campaign_id"]
-    # Snapshot the dispatch info ONCE, as a durable step. `buyer_ids` only includes
+    # Snapshot the dispatch info once, as a durable step. `buyer_ids` only includes
     # still-pending recipients, so recomputing it on an Inngest replay (every request
     # after a completed step re-runs this function body) would drop each buyer the
     # moment their send step flipped them to 'sent' — the loop below would never
@@ -84,11 +84,11 @@ async def outreach_fanout(ctx: inngest.Context) -> dict:
             res = {"status": "error"}
         if res.get("status") == "sent":
             sent += 1
-            # Every recipient is a registered user → arm the presence-gated away-responder
-            # (Graph 2): the opener is an inbound to their side. A durable step, not a raw
-            # client.send — raw sends between steps re-fire on every replay (one duplicate
-            # away-agent turn per replay), and are skipped entirely if their loop iteration
-            # never replays.
+            # Every recipient is a registered user → arm their presence-gated
+            # away-responder: the opener is an inbound to their side. A durable step, not
+            # a raw client.send — raw sends between steps re-fire on every replay (one
+            # duplicate away-agent turn per replay), and are skipped entirely if their
+            # loop iteration never replays.
             if res.get("chat_id") and res.get("opener_message_id"):
                 await ctx.step.send_event(
                     f"arm-u{uid}",

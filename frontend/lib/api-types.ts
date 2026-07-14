@@ -87,7 +87,7 @@ export interface paths {
         /**
          * @description The seller's outreach campaigns + the ranked shortlist. Approval is the batch-level
          *     send gate: it flips the campaign to `sending` and emits the durable `outreach/approved`
-         *     event — a fresh event, not a parked wait, so it survives a closed tab (architecture §6).
+         *     event — a fresh event, not a parked wait, so it survives a closed tab.
          */
         get: operations["ai_outreach_campaigns_list"];
         put?: never;
@@ -108,7 +108,7 @@ export interface paths {
         /**
          * @description The seller's outreach campaigns + the ranked shortlist. Approval is the batch-level
          *     send gate: it flips the campaign to `sending` and emits the durable `outreach/approved`
-         *     event — a fresh event, not a parked wait, so it survives a closed tab (architecture §6).
+         *     event — a fresh event, not a parked wait, so it survives a closed tab.
          */
         get: operations["ai_outreach_campaigns_retrieve"];
         put?: never;
@@ -131,7 +131,7 @@ export interface paths {
         /**
          * @description The seller's outreach campaigns + the ranked shortlist. Approval is the batch-level
          *     send gate: it flips the campaign to `sending` and emits the durable `outreach/approved`
-         *     event — a fresh event, not a parked wait, so it survives a closed tab (architecture §6).
+         *     event — a fresh event, not a parked wait, so it survives a closed tab.
          */
         post: operations["ai_outreach_campaigns_approve_create"];
         delete?: never;
@@ -152,7 +152,7 @@ export interface paths {
         /**
          * @description The seller's outreach campaigns + the ranked shortlist. Approval is the batch-level
          *     send gate: it flips the campaign to `sending` and emits the durable `outreach/approved`
-         *     event — a fresh event, not a parked wait, so it survives a closed tab (architecture §6).
+         *     event — a fresh event, not a parked wait, so it survives a closed tab.
          */
         post: operations["ai_outreach_campaigns_cancel_create"];
         delete?: never;
@@ -338,7 +338,7 @@ export interface paths {
         };
         /**
          * @description The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
-         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the same seam the
          *     copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
          *     a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
          *     id returns an error dict → 404).
@@ -347,7 +347,7 @@ export interface paths {
         put?: never;
         /**
          * @description The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
-         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the same seam the
          *     copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
          *     a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
          *     id returns an error dict → 404).
@@ -368,7 +368,7 @@ export interface paths {
         };
         /**
          * @description The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
-         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the same seam the
          *     copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
          *     a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
          *     id returns an error dict → 404).
@@ -376,7 +376,7 @@ export interface paths {
         get: operations["buy_boxes_retrieve_2"];
         /**
          * @description The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
-         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the same seam the
          *     copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
          *     a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
          *     id returns an error dict → 404).
@@ -385,7 +385,7 @@ export interface paths {
         post?: never;
         /**
          * @description The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
-         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the same seam the
          *     copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
          *     a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
          *     id returns an error dict → 404).
@@ -395,7 +395,7 @@ export interface paths {
         head?: never;
         /**
          * @description The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
-         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+         *     Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the same seam the
          *     copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
          *     a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
          *     id returns an error dict → 404).
@@ -412,7 +412,7 @@ export interface paths {
         };
         /**
          * @description GET /api/buyers/rank?address=…&price=…&beds=…&sqft=…&condition=…&property_type=…
-         *     &limit=… — the `/buyers` ad-hoc matcher (no listing persisted). Delegates to the SAME
+         *     &limit=… — the `/buyers` ad-hoc matcher (no listing persisted). Delegates to the same
          *     engine entry point the copilot's `find_buyers` tool uses (agent == API): address→geo
          *     via the known Property universe (no geocoder), then `rank_buyers_for_attrs`. An
          *     unresolvable address degrades to `ranked: []` with `resolved: false`, not an error.
@@ -819,7 +819,7 @@ export interface components {
         /**
          * @description The `/listings/[id]` detail: every property + media + the deal mandate.
          *     Cross-user visible for active listings — the mandate (floor/ceiling/instructions)
-         *     is seller-PRIVATE and only serialized for the owner; everyone else gets null.
+         *     is seller-private and only serialized for the owner; everyone else gets null.
          */
         ListingDetail: {
             readonly id: number;

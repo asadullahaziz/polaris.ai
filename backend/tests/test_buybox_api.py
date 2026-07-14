@@ -1,11 +1,11 @@
 """
-P5 (buy-box REST lift) — the `/settings › Buy-boxes` API + the agent==API guarantee.
+The `/settings › Buy-boxes` REST API + the agent==API guarantee.
 
-The buy-box create/read/update/delete logic was lifted from the copilot `dal` into
-`catalog.services` so BOTH the REST endpoint and the copilot's buy-box tools call the ONE
-seam. These tests exercise the REST surface (CRUD, inline deal-settings + geo, owner
-scoping) and assert **parity**: a box written over REST is visible through the copilot dal
-seam with the identical shape, and vice-versa. LLM-free.
+Both the REST endpoint and the copilot's buy-box tools call the one seam,
+`catalog.services`. These tests exercise the REST surface (CRUD, inline
+deal-settings + geo, owner scoping) and assert parity: a box written over REST
+is visible through the copilot dal seam with the identical shape, and
+vice-versa. LLM-free.
 """
 
 from __future__ import annotations

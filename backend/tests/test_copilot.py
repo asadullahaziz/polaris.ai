@@ -1,8 +1,8 @@
 """
-P2 copilot — LLM-free coverage of the dal seams (the plumbing the ReAct agent rides
-on), the tool suite wiring, and the crown-jewel new mechanism: confirm-every-write via
-a LangGraph human-in-the-loop interrupt (a write commits ONLY after an explicit approve
-resume). No model is called anywhere here.
+Copilot plumbing, LLM-free: the dal seams the ReAct agent rides on, the tool
+suite wiring, and confirm-every-write via a LangGraph human-in-the-loop
+interrupt (a write commits only after an explicit approve resume). No model is
+called anywhere here.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def test_ai_chat_ownership_scoping(user, other):
     assert dal._list_ai_chats(other.id) == []
 
 
-# ============ block-structured transcript: tool memory (2026-07-10) ============
+# ==================== block-structured transcript: tool memory =================
 def _one_tool_turn(chat_id: int, i: int) -> int | None:
     """One user turn whose reply used a tool: user row + [assistant(call) → tool result
     → assistant text] persisted as blocks. Returns save_turn_blocks' last-text id."""
@@ -93,7 +93,7 @@ def _one_tool_turn(chat_id: int, i: int) -> int | None:
 
 @pytest.mark.django_db
 def test_transcript_rehydrates_tool_blocks(user):
-    """The model REMEMBERS tool traffic: assistant tool_calls + tool results round-trip
+    """The model remembers tool traffic: assistant tool_calls + tool results round-trip
     through `ai_message` into real LangChain blocks, and the friendly label is stamped
     on the persisted row (what the UI chip renders on reopen)."""
     from ai.models import AiMessage
@@ -268,7 +268,7 @@ def test_create_list_detail_and_mandate_roundtrip(user):
 
 @pytest.mark.django_db
 def test_listing_seams_are_owner_scoped(user, other):
-    # Copilot-created listings start as DRAFTS — invisible to anyone but the owner.
+    # Copilot-created listings start as drafts — invisible to anyone but the owner.
     lid = dal._create_listing(user.id, {"address": "1 A St", "asking_price": 100000})["listing_id"]
     assert "error" in dal._get_listing_detail(lid, other.id)
     assert "error" in dal._set_mandate_for_listing(lid, other.id, {"floor_price": 1})
@@ -276,7 +276,7 @@ def test_listing_seams_are_owner_scoped(user, other):
     assert "error" in dal._rank_buyers(lid, other.id)
     assert "error" in dal._assess_deal_for_listing(lid, other.id, None)
 
-    # Even once ACTIVE (publicly visible), the seller-side seams stay owner-only.
+    # Even once active (publicly visible), the seller-side seams stay owner-only.
     dal._update_listing(lid, user.id, {"status": "active"})
     assert "error" in dal._set_mandate_for_listing(lid, other.id, {"floor_price": 1})
     assert "error" in dal._get_mandate_for_listing(lid, other.id)
@@ -308,7 +308,7 @@ def test_marketplace_reads_cover_active_listings_without_private_mandate(user, o
     assert dal._browse_listings(other.id, q="starter")[0]["listing_id"] == lid
     assert dal._browse_listings(other.id, q="zzz-no-match") == []
 
-    # Detail is readable, but the PRIVATE mandate slot does not exist at all (airlock:
+    # Detail is readable, but the private mandate slot does not exist at all (airlock:
     # no empty slot to voice) — while the owner still gets it.
     detail = dal._get_listing_detail(lid, other.id)
     assert detail["owned_by_principal"] is False
@@ -379,7 +379,7 @@ def test_buy_box_crud_with_geo_and_mandate(user, other):
 def test_tool_suite_covers_reads_and_confirm_gated_writes(user):
     tools = tools_for("copilot", user.id)
     names = {t.name for t in tools}
-    # A representative slice of the API-mirroring surface (revisions §polaris-ai).
+    # A representative slice of the API-mirroring surface.
     expected_reads = {
         "lookup_property",
         "list_my_listings",
@@ -396,7 +396,7 @@ def test_tool_suite_covers_reads_and_confirm_gated_writes(user):
     assert expected_reads <= names
     # Every declared write tool is present and marked confirm-gated.
     assert WRITE_TOOL_NAMES <= names
-    # write_memory is a low-stakes write — present but NOT confirm-gated.
+    # write_memory is a low-stakes write — present but not confirm-gated.
     assert "write_memory" in names and "write_memory" not in WRITE_TOOL_NAMES
 
 
@@ -469,7 +469,7 @@ def test_send_messages_opens_the_pair_chat_and_is_replay_safe(user, other):
     by_user = {r["recipient_user_id"]: r for r in res["results"]}
     assert by_user[other.id]["status"] == "sent"
     assert by_user[999999]["status"] == "error"
-    # First contact OPENED the one pair chat — no prior chat needed.
+    # First contact opened the one pair chat — no prior chat needed.
     chat = Chat.objects.get(id=by_user[other.id]["chat_id"])
     sent_msg = Message.objects.get(chat=chat)
     assert sent_msg.kind == "agent" and sent_msg.sender_id == user.id
@@ -485,8 +485,8 @@ def test_send_messages_opens_the_pair_chat_and_is_replay_safe(user, other):
     assert replay["results"][0]["status"] == "duplicate"
     assert Message.objects.filter(chat=chat).count() == 1
 
-    # A NEW turn (new thread_id) may message again — repeatable by design, and it
-    # REUSES the pair chat (one chat per pair, ever).
+    # A new turn (new thread_id) may message again — repeatable by design, and it
+    # reuses the pair chat (one chat per pair).
     again = dal._send_messages(user.id, sends[:1], "copilot:thread-2")
     assert again["sent"] == 1
     assert Message.objects.filter(chat=chat).count() == 2
@@ -495,9 +495,9 @@ def test_send_messages_opens_the_pair_chat_and_is_replay_safe(user, other):
 
 @pytest.mark.django_db
 def test_send_messages_buyer_contacts_seller_and_deal_engages(user, other):
-    """The buyer→seller path the tool split used to make impossible: `other` messages
-    the seller of an active listing, attaching it. The pair chat opens, and the deals
-    seam files the inquiry as (listing, buyer=sender) at stage 'engaged'."""
+    """A buyer messages the seller of an active listing, attaching it. The pair chat
+    opens, and the deals seam files the inquiry as (listing, buyer=sender) at
+    stage 'engaged'."""
     from deals.models import Deal
 
     lid = dal._create_listing(user.id, {"address": "9 Hollis Ct", "asking_price": 439200})[
@@ -566,7 +566,7 @@ async def test_write_tool_interrupts_then_commits_on_approve(reset_checkpointer,
 
     assert await sync_to_async(Listing.objects.filter(seller=user).count)() == 0
 
-    # Approve → the SAME thread resumes and the write commits exactly once.
+    # Approve → the same thread resumes and the write commits exactly once.
     done = await graph.ainvoke(Command(resume={"approved": True}), config=cfg)
     assert done["result"]["address"] == "77 Confirm Ave"
     assert await sync_to_async(Listing.objects.filter(seller=user).count)() == 1
@@ -598,7 +598,7 @@ async def test_send_messages_interrupts_with_drafts_then_sends_on_approve(
 ):
     """The batch message write rides the same confirm gate: the interrupt payload
     carries the per-recipient drafts (what the card renders, incl. the new_chat flag),
-    NOTHING exists until the approve resume — not even the chat — and the commit opens
+    nothing exists until the approve resume — not even the chat — and the commit opens
     the pair chat and posts kind='agent' messages as the principal."""
     from asgiref.sync import sync_to_async
 
@@ -695,7 +695,7 @@ async def test_parked_confirm_resumes_from_the_durable_record_on_a_fresh_graph(
     reset_checkpointer, user
 ):
     """The reload contract: a turn paused under one 'socket' resumes + commits from a
-    BRAND-NEW graph object (no in-memory state) using only the durable record + the shared
+    brand-new graph object (no in-memory state) using only the durable record + the shared
     Postgres checkpointer — proving the parked interrupt survives a nav/reload/restart."""
     from asgiref.sync import sync_to_async
 
@@ -723,7 +723,7 @@ async def test_parked_confirm_resumes_from_the_durable_record_on_a_fresh_graph(
     assert await sync_to_async(Listing.objects.filter(seller=user).count)() == 0
 
     # Fresh "socket": no in-memory pending, a new graph object, same checkpointer. Rehydrate
-    # cfg from the DB and approve → the SAME parked turn resumes and commits exactly once.
+    # cfg from the DB and approve → the same parked turn resumes and commits exactly once.
     record = await dal.load_pending_confirm(chat_id)
     graph2 = _one_tool_graph(checkpointer, _tool_by_name(user.id, "create_listing"))
     done = await graph2.ainvoke(Command(resume={"approved": True}), config=record["cfg"])
@@ -740,7 +740,7 @@ async def test_parked_confirm_resumes_from_the_durable_record_on_a_fresh_graph(
 @pytest.mark.django_db
 def test_confirm_outcome_row_is_visible_to_ui_but_skipped_by_the_model(user):
     """A resolved confirm persists as a role='tool' row carrying the card payload + outcome.
-    `_load_transcript` SKIPS it (never re-fed to the model), but the REST detail exposes it
+    `_load_transcript` skips it (never re-fed to the model), but the REST detail exposes it
     (via `tool_calls`) in timeline order so the FE re-renders a greyed 'Approved' card."""
     from ai.models import AiChat
     from ai.serializers import AiChatDetailSerializer
@@ -781,7 +781,7 @@ def test_pending_confirm_expires_when_stale(user):
     chat_id = dal._create_ai_chat(user.id)
     value = {"kind": "confirm_write", "action": "create_listing", "summary": "x", "proposal": {}}
 
-    # Fresh (created now) → NOT expired, pointer stays.
+    # Fresh (created now) → not expired, pointer stays.
     dal._save_pending_confirm(
         chat_id, {"conv_id": chat_id, "value": value, "created_at": timezone.now().isoformat()}
     )

@@ -31,9 +31,9 @@ export type ConfirmPayload = {
     | "create_buy_box"
     | "update_buy_box"
     | "delete_buy_box"
-    | "launch_outreach" // legacy (pre-2026-07-07 cards in old timelines)
-    | "send_outreach" // legacy (pre-2026-07-11, renamed launch_outreach_campaign)
-    | "send_chat_messages" // legacy (pre-2026-07-11, replaced by send_messages)
+    | "launch_outreach" // legacy cards in old transcripts
+    | "send_outreach" // legacy name for launch_outreach_campaign
+    | "send_chat_messages" // legacy name for send_messages
     | "launch_outreach_campaign"
     | "send_messages"
     | string;

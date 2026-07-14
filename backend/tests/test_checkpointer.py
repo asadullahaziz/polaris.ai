@@ -1,10 +1,10 @@
 """
-Checkpointer persistence smoke — the one leg of the deleted P0 spike worth keeping.
+Checkpointer persistence smoke.
 
-Proves the shared process-wide `AsyncPostgresSaver` (the riskiest seam: a Postgres
-pool separate from Django's ORM connection) compiles against a real LangGraph graph
-and persists state across invocations on the same `thread_id`. No LLM, no spike app —
-a trivial inline counter graph stands in for the old spike graph.
+Proves the shared process-wide `AsyncPostgresSaver` (a Postgres pool separate
+from Django's ORM connection) compiles against a real LangGraph graph and
+persists state across invocations on the same `thread_id`. No LLM — a trivial
+inline counter graph.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ async def test_checkpointer_persists(reset_checkpointer):
     assert s1["count"] == 1
     assert s1["echo"] == "pong:a"
 
-    # Second invoke on the SAME thread must resume from the persisted checkpoint.
+    # Second invoke on the same thread must resume from the persisted checkpoint.
     s2 = await graph.ainvoke({"ping": "b"}, config=cfg)
     assert s2["count"] == 2
 

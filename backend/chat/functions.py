@@ -1,29 +1,29 @@
 """
-Away-responder Inngest handler (architecture §5/§9a; revisions 2026-07-03/-04).
+Away-responder Inngest handler.
 
-`thread_inbound` fires on **`chat/inbound`** `{chat_id, inbound_message_id}` (emitted by
+`thread_inbound` fires on `chat/inbound` `{chat_id, inbound_message_id}` (emitted by
 `ChatConsumer._handle_send` + `chat.views._broadcast_and_arm` whenever a message lands in
 a chat). It:
 
-  1. **Debounces** with the presence grace: `step.wait_for_event("chat/focused", …)`
+  1. Debounces with the presence grace: `step.wait_for_event("chat/focused", …)`
      matched to this chat, timeout = the grace window. If the covered human shows up
-     (focus/typing) inside the window → stand down (architecture §9a).
+     (focus/typing) inside the window → stand down.
   2. Loads the principal-centric plan and, if a reply is warranted, runs the away
-     assistant's Graph 2 turn (presence + cap re-checked; the DB commit gate re-checks
-     both atomically).
-  3. **Bounded agent↔agent loop (revisions 2026-07-04):** after a reply is actually
-     *sent*, re-emits `chat/inbound` with the NEW agent message as the inbound — arming
-     the *counterparty's* presence-gated away-agent. If both humans are away the two
-     assistants converse, bounded by the per-user reply cap (`UserProfile.agent_reply_cap`,
-     default 3): each principal's agent sends at most N since that principal last spoke,
-     then the next inbound-while-away **escalates** instead. Termination is guaranteed
-     (worst case ≈ 2N agent turns, then both sides escalate).
+     assistant's responder turn (presence + cap re-checked; the DB commit gate
+     re-checks both atomically).
+  3. Bounded agent↔agent loop: after a reply is actually sent, re-emits `chat/inbound`
+     with the new agent message as the inbound — arming the counterparty's presence-
+     gated away-agent. If both humans are away the two assistants converse, bounded by
+     the per-user reply cap (`UserProfile.agent_reply_cap`, default 6): each
+     principal's agent sends at most N since that principal last spoke, then the next
+     inbound-while-away escalates instead. Termination is guaranteed (worst case ≈ 2N
+     agent turns, then both sides escalate).
 
-This handler is deliberately **thin durable glue**. The "exactly one reply per turn"
-guarantee is the DB commit gate (`chat.responder_service`), not this code — so an
+This handler is deliberately thin durable glue. The "exactly one reply per turn"
+guarantee is the DB commit gate (`chat.responder_service`), not this code — an
 at-least-once retry that re-runs the whole turn recomputes the same `dedup_key` and the
-insert is a no-op (architecture §9b). No `step.run` around the turn: re-running it is by
-design, and it's idempotent.
+insert is a no-op. No `step.run` around the turn: re-running it is by design, and it's
+idempotent.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ async def thread_inbound(ctx: inngest.Context) -> dict:
 
     # Already at the principal's reply cap since they last spoke, and the counterparty is
     # pressing again while the principal is away → hand to the human, don't farm another
-    # reply (architecture §5; caps the bounded loop at the principal's own N).
+    # reply (caps the bounded loop at the principal's own N).
     if await sync_to_async(svc.reply_cap_reached)(chat_id, principal_id):
         who = plan.get("counterparty_name") or "The counterparty"
         await sync_to_async(svc.escalate)(

@@ -2,7 +2,7 @@
 chat services — the write/query seam for human 1:1 messaging (the same layer the REST
 views and the ChatConsumer both call, so live-WS and REST stay in lockstep).
 
-Covers: **find-or-create the one chat per user-pair** (`pair_key`), posting a human
+Covers: find-or-create the one chat per user-pair (`pair_key`), posting a human
 message (with optional listing attachments + client-dedup), the inbox list, a chat's
 transcript, and read-state. Pure ORM, no LLM. The autonomous-reply commit gate lives
 separately in `responder_service.py` (the invariant core).
@@ -27,7 +27,7 @@ def pair_key(a_id: int, b_id: int) -> str:
 # ---- find-or-create the single pair chat ---------------------------------------
 @transaction.atomic
 def get_or_create_chat(a_id: int, b_id: int) -> tuple[Chat, bool]:
-    """Return (chat, created) for the ONE chat between users a and b. Idempotent from
+    """Return (chat, created) for the one chat between users a and b. Idempotent from
     either direction (canonical `pair_key`); creates exactly two `ChatMember` rows."""
     if a_id == b_id:
         raise ValueError("a chat needs two distinct users")
@@ -140,10 +140,10 @@ def post_human_message(
     except IntegrityError:
         return {"duplicate": True}
     Chat.objects.filter(id=chat_id).update(updated_at=timezone.now())
-    # The awaited human returning reopens an escalated chat (ONLY the member the
+    # The awaited human returning reopens an escalated chat (only the member the
     # escalation waits on — the counterparty pressing again must not reopen it). Their
     # own human message also resets their agent's reply cap, so cover genuinely resumes.
-    # A NULL escalated_for is a legacy escalation (pre-2026-07-08): any human reopens.
+    # A NULL escalated_for: any human reopens.
     Chat.objects.filter(
         models.Q(escalated_for__isnull=True) | models.Q(escalated_for_id=sender_id),
         id=chat_id,
@@ -173,7 +173,7 @@ def post_agent_message(
     dedup_key: str | None = None,
     action: str = "inform",
 ) -> dict:
-    """Persist an agent message — Polaris speaking FOR `sender_id` (kind='agent',
+    """Persist an agent message — Polaris speaking for `sender_id` (kind='agent',
     sender=the principal), e.g. a copilot follow-up or an outreach opener. The caller
     supplies a namespaced `dedup_key` (`copilot:…` / `outreach:…`) so a replayed commit
     is a silent no-op → {duplicate}. Returns the serialized message dict."""
@@ -274,7 +274,7 @@ def chat_header(chat_id: int, user_id: int) -> dict | None:
 
 def list_messages(chat_id: int, user_id: int) -> list[dict] | None:
     """Transcript for a member: all `sent` messages + this user's own `draft`s (a draft
-    is visible ONLY to its owner — the away-responder's proposed reply awaiting approval)."""
+    is visible only to its owner — the away-responder's proposed reply awaiting approval)."""
     if not ChatMember.objects.filter(chat_id=chat_id, user_id=user_id).exists():
         return None
     from django.db.models import Q
