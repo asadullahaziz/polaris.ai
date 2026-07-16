@@ -1,30 +1,15 @@
-"""
-Thin data-access layer — `polaris_agent` reaches Django models only through here,
-wrapping sync ORM calls with `sync_to_async` so they are safe to call from async
-graphs/consumers/tools. Keeps the package import-isolated from views and keeps the
-ORM boundary in one place (base plan §"the seams").
+"""Data-access layer: the only path from polaris_agent to the Django ORM.
 
-v2 rewire (P2): copilot chats/memory → `ai.AiChat/AiMessage/AgentMemory`; listings /
-property lookup / valuation / mandate → `catalog.services` + `matching.engine` (the
-SAME seam the REST API calls, so the agent and API stay in lockstep); buy-box CRUD
-(lifted into `catalog.services` in P5, so `/settings › Buy-boxes` REST == the agent) +
-ranking/assessment likewise. Every function is **user-scoped** — it takes the acting
-principal's id and only ever touches that user's own data.
+A private sync `_fn` does the ORM work; the exported name is its `sync_to_async`
+wrapper, safe to call from async graphs/consumers/tools. Django models and
+cross-app services are imported lazily inside each function so the package stays
+importable outside Django. Every function is user-scoped: it takes the acting
+user's id and only touches that user's data.
 
-Convention (v1, kept): a private sync `_fn` does the ORM work; the exported name is
-its `sync_to_async` wrapper. Django models + cross-app services are imported lazily
-inside each function so this module stays importable outside the app graph.
-
-v2 rewire (P4): `responder_plan` is **principal-centric** over `chat.*` (no role, no
-`subject_listing`) — principal = the other `ChatMember`, stance from focal-listing
-ownership, context = full transcript + all listing attachments + the principal's in-play
-mandates. `responder_assess`/`responder_estimate` give the graph its deterministic deal
-math over ANY listing (the focal one is owned by the counterparty on the buy side).
-
-v2 rewire (P5): `launch_outreach`/`approve_campaign` wrap `ai.outreach_service` (the pure
-ledger core) so the copilot's confirm-gated outreach tool reaches it through this seam.
-The durable `outreach/approved` emit stays in the CALLER (the tool / REST view) — Inngest
-never leaks into `dal`.
+Reads and writes go through the same service seams as the REST API
+(`catalog.services`, `matching.engine`, `ai.outreach_service`, `chat.services`),
+so the agent and the API stay in lockstep. The durable `outreach/approved` emit
+stays in the caller (the tool / REST view) — Inngest never leaks into `dal`.
 """
 
 from __future__ import annotations
@@ -58,7 +43,7 @@ def _condition_to_int(v):
     return v
 
 
-# ---- Copilot chats + transcript (system of record, architecture §9b) -----------
+# ---- Copilot chats + transcript (the DB is the system of record) ---------------
 def _create_ai_chat(owner_id: int, title: str | None = None) -> int:
     from ai.models import AiChat
 
@@ -130,13 +115,14 @@ def _repair_tool_pairing(msgs: list) -> list:
 
 
 def _load_transcript(ai_chat_id: int) -> list:
-    """Rehydrate the LangChain message list from `ai_message` (architecture §9b).
+    """Rehydrate the LangChain message list from `ai_message` — the DB, not the
+    checkpoint, is the transcript's system of record.
 
-    Block-structured (2026-07-10): assistant rows carry their `tool_calls` and
-    role='tool' rows the results, so the model REMEMBERS what tools returned in past
-    turns (ids, figures, rankings) instead of only its own prose. Context policy
-    (settings): the last COPILOT_FULL_FIDELITY_TURNS user turns rehydrate at full
-    fidelity; older turns collapse to text-only. Oversized tool results truncate.
+    Block-structured: assistant rows carry their `tool_calls` and role='tool' rows
+    the results, so the model remembers what tools returned in past turns (ids,
+    figures, rankings) instead of only its own prose. Context policy (settings):
+    the last COPILOT_FULL_FIDELITY_TURNS user turns rehydrate at full fidelity;
+    older turns collapse to text-only. Oversized tool results truncate.
     Confirm-card rows (kind='confirm_write') stay UI-only — never re-fed."""
     from django.conf import settings
 
@@ -208,10 +194,10 @@ def _save_ai_message(ai_chat_id: int, *, role: str, content: str) -> int:
 
 
 def _save_turn_blocks(ai_chat_id: int, messages: list) -> int | None:
-    """Persist one completed copilot turn as BLOCK rows (2026-07-10): each assistant
-    LLM call is its own row (its `tool_calls` in the JSON column), each tool result a
-    role='tool' row (`{kind: 'tool_result', tool_call_id, name, label}` + the result as
-    content). Atomic — a partially-persisted turn would rehydrate as a broken tool pair.
+    """Persist one completed copilot turn as block rows: each assistant LLM call is
+    its own row (its `tool_calls` in the JSON column), each tool result a role='tool'
+    row (`{kind: 'tool_result', tool_call_id, name, label}` + the result as content).
+    Atomic — a partially-persisted turn would rehydrate as a broken tool pair.
     Returns the id of the last assistant row that carries text (what `copilot.done`
     reports), or None if the turn produced no assistant text."""
     from django.db import transaction
@@ -298,10 +284,10 @@ def _clear_pending_confirm(ai_chat_id: int) -> None:
 
 # ---- Resolved/expired confirm → a durable, model-invisible transcript artifact ---
 def _save_confirm_outcome(ai_chat_id: int, value: dict, resolution: str) -> int:
-    """Persist a RESOLVED write-confirm so a reopened chat re-renders a greyed
+    """Persist a resolved write-confirm so a reopened chat re-renders a greyed
     'Approved/Declined/Expired' card in the timeline. Stored as role='tool', which
-    `_load_transcript` SKIPS — visible in the UI, never re-fed to the model. The structured
-    card payload + outcome ride in `tool_calls` (the FE reads it back)."""
+    `_load_transcript` skips — visible in the UI, never re-fed to the model. The
+    structured card payload + outcome ride in `tool_calls` (the FE reads it back)."""
     from django.utils import timezone
 
     from ai.models import AiChat, AiMessage
@@ -324,7 +310,7 @@ def _expire_pending_confirm_if_stale(ai_chat_id: int, ttl_seconds: int) -> bool:
     """If a parked confirm is older than `ttl_seconds`, expire it: leave a durable 'expired'
     card and clear the pending pointer. Returns True if it expired. Lazy — called on reopen /
     next send / resume, so no background job is needed (the orphaned LangGraph checkpoint is
-    the deferred Redis/prune concern, not a correctness issue here)."""
+    a cleanup concern, not a correctness one)."""
     from datetime import datetime
 
     from django.utils import timezone
@@ -366,7 +352,7 @@ save_confirm_outcome = sync_to_async(_save_confirm_outcome)
 expire_pending_confirm_if_stale = sync_to_async(_expire_pending_confirm_if_stale)
 
 
-# ---- Agent memory (per-principal; namespace-scoped + recency-capped, §9b) -------
+# ---- Agent memory (per-principal; namespace-scoped + recency-capped) -----------
 def _read_memory(principal_id: int, namespace: str = "general", limit: int = 20) -> list[dict]:
     from ai.models import AgentMemory
 
@@ -401,7 +387,7 @@ def _display_name(user_id: int) -> str | None:
 
 def _agent_instructions(user_id: int) -> str:
     """The user's global `UserProfile.agent_instructions` (blank if unset), injected
-    into the copilot system prompt (revisions §settings)."""
+    into the copilot system prompt."""
     from users.models import UserProfile
 
     row = UserProfile.objects.filter(user_id=user_id).values("agent_instructions").first()
@@ -530,7 +516,7 @@ def _get_listing_detail(listing_id: int, seller_id: int) -> dict:
         "seller_name": lst.seller.display_name,
         "owned_by_principal": owned,
     }
-    # The mandate (floor/ceiling/instructions) is seller-PRIVATE — the airlock rule:
+    # The mandate (floor/ceiling/instructions) is seller-private — the airlock rule:
     # another seller's listing gets no mandate slot at all, not an empty one.
     if owned:
         detail["mandate"] = services.get_mandate_for_listing(lst)
@@ -670,11 +656,11 @@ get_mandate_for_listing = sync_to_async(_get_mandate_for_listing)
 set_mandate_for_listing = sync_to_async(_set_mandate_for_listing)
 
 
-# ---- Buy-box CRUD (delegates to catalog.services — the shared API seam, P5) -------
-# Lifted into `catalog.services` in P5 so the `/settings › Buy-boxes` REST and these
-# copilot tools share ONE seam (agent == API). dal stays the user-scoped async wrapper;
-# the copilot's flat `fields` contract (scalars + inline ceiling/must_haves/instructions
-# + a single `geo`) is unchanged — it IS the services input shape.
+# ---- Buy-box CRUD (delegates to catalog.services — the seam shared with REST) -----
+# The `/settings › Buy-boxes` REST views and these copilot tools share one seam
+# (agent == API); dal stays the user-scoped async wrapper. The copilot's flat `fields`
+# contract (scalars + inline ceiling/must_haves/instructions + a single `geo`) is the
+# services input shape.
 def _list_buy_boxes(user_id: int) -> list[dict]:
     from catalog import services
 
@@ -800,7 +786,7 @@ def _rank_buyers_for_listings(
 
 def _preview_outreach(seller_id: int, recipients: list[dict]) -> dict:
     """Validate an outreach selection + resolve names/addresses/ledger flags for the
-    confirm card. Read-only (safe to re-run on an interrupt resume). Builds the SAME
+    confirm card. Read-only (safe to re-run on an interrupt resume). Builds the same
     templated fallback body the commit would use, so the card never lies."""
     from django.contrib.auth import get_user_model
 
@@ -896,7 +882,7 @@ def _list_chats(
     limit: int = 20,
 ) -> list[dict]:
     """The principal's 1:1 chats, filterable — the copilot's people→chat_id resolver.
-    `awaiting_reply` = the last sent message came from OUR side (human or agent), i.e.
+    `awaiting_reply` = the last sent message came from our side (human or agent), i.e.
     the counterparty hasn't answered yet."""
     from chat.services import list_inbox
 
@@ -945,7 +931,7 @@ def _list_chats(
 def _preview_message_sends(principal_id: int, user_ids: list[int], listing_ids: list[int]) -> dict:
     """Recipient + attachment validation for the confirm card. Read-only (safe to re-run
     on an interrupt resume). Resolves each valid recipient's display name and whether the
-    send OPENS a new chat (no pair chat yet); a user_id missing from `recipients` is
+    send opens a new chat (no pair chat yet); a user_id missing from `recipients` is
     invalid (unknown, or the principal themself). Attachments follow marketplace
     visibility — ids the principal can't see come back in `invalid_listing_ids`."""
     from django.contrib.auth import get_user_model
@@ -977,7 +963,7 @@ def _preview_message_sends(principal_id: int, user_ids: list[int], listing_ids: 
 
 
 def _send_messages(principal_id: int, sends: list[dict], dedup_prefix: str) -> dict:
-    """Commit a confirmed batch: one kind='agent' message per RECIPIENT, sent as Polaris
+    """Commit a confirmed batch: one kind='agent' message per recipient, sent as Polaris
     for the principal. The pair chat is found-or-created per recipient (the same move as
     the web client's POST /api/chats/), so first contact and follow-up are one operation.
     Each insert is idempotent under `{dedup_prefix}:{chat_id}:{body-hash}` so a resume
@@ -1043,16 +1029,16 @@ preview_message_sends = sync_to_async(_preview_message_sends)
 send_messages = sync_to_async(_send_messages)
 
 
-# ---- Away-responder (Graph 2) — principal-centric plan + deal math (P4) ----------
-# The away-assistant covers one human's chats while they're away. It reads over the WHOLE
+# ---- Away-responder: plan resolution + deterministic deal math -------------------
+# The away-assistant covers one human's chats while they're away. It reads the whole
 # free-form chat: the full transcript, every listing ever attached, and the principal's
-# in-play mandates. No fixed role, no bound listing (revisions §auto-responder).
+# in-play mandates. No fixed role, no bound listing.
 _DISPOSITION_TO_STRATEGY = {"flip": "fix_flip", "hold": "buy_hold", "brrrr": "brrrr"}
 
 
 def _mandate_dict(m) -> dict:
-    """A mandate row → the PRIVATE dict the responder reasons from (v2 drops
-    auto_reply/autonomy — those are user-level on UserProfile now)."""
+    """A mandate row → the private dict the responder reasons from. Governance knobs
+    (auto_reply/autonomy) are user-level on UserProfile, not here."""
     return {
         "floor_price": int(m.floor_price) if m.floor_price is not None else None,
         "ceiling_price": int(m.ceiling_price) if m.ceiling_price is not None else None,
@@ -1063,7 +1049,7 @@ def _mandate_dict(m) -> dict:
 
 
 def _listing_public(listing, principal_id: int) -> dict:
-    """Public listing facts (visible to BOTH parties) + an ownership flag. `owned_by_
+    """Public listing facts (visible to both parties) + an ownership flag. `owned_by_
     principal` is what derives stance — the away-assistant defends a listing it owns and
     evaluates one it doesn't."""
     lp = listing.listingproperty_set.select_related("property").order_by("sort_order").first()
@@ -1088,9 +1074,9 @@ def _listing_public(listing, principal_id: int) -> dict:
 
 
 def _chat_listings(chat_id: int, principal_id: int) -> tuple[list[dict], int | None]:
-    """Every listing attached anywhere in the chat (dedup'd), plus the FOCAL one (the
-    most-recently referenced attachment). Free-form chats accrue many listings over time,
-    so the responder tracks the latest-referenced one (revisions decision #4)."""
+    """Every listing attached anywhere in the chat (dedup'd), plus the focal one (the
+    most-recently referenced attachment). Free-form chats accrue many listings over
+    time, so the responder tracks the latest-referenced one."""
     from chat.models import MessageAttachment
 
     rows = (
@@ -1113,7 +1099,7 @@ def _chat_listings(chat_id: int, principal_id: int) -> tuple[list[dict], int | N
 
 
 def _chat_transcript(chat_id: int, principal_id: int) -> list[dict]:
-    """The PUBLIC transcript (sent messages only), oldest first, tagged with whether each
+    """The public transcript (sent messages only), oldest first, tagged with whether each
     was authored by the principal (drives the You/Counterparty rendering in Stage 2)."""
     from chat.models import Message
 
@@ -1158,7 +1144,7 @@ def _box_mandate_dict(box) -> dict | None:
 def _in_play_mandates(principal_id: int, listings: list[dict]) -> list[dict]:
     """Every private mandate the principal holds that could bear on this chat: floors for
     owned listings referenced here + ceilings/must-haves for their active buy-boxes. The
-    UNION of their limits is what the output check scans (revisions §disclosure)."""
+    union of their limits is what the output check scans."""
     from catalog.models import Mandate
 
     out: list[dict] = []
@@ -1242,9 +1228,9 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
     if len(member_ids) != 2 or inbound["sender_id"] not in member_ids:
         return {"skip": "inbound sender is not one of the two chat members"}
 
-    # Principal = the OTHER member (the away human the agent covers for). The inbound
-    # sender is the counterparty this turn — including the agent-inbound of the bounded
-    # loop, where the sender is the OTHER side's principal.
+    # Principal = the other member (the away human the agent covers for). The inbound
+    # sender is the counterparty this turn — including an agent-authored inbound, where
+    # the sender is the other side's principal.
     principal_id = next(uid for uid in member_ids if uid != inbound["sender_id"])
     counterparty_user_id = inbound["sender_id"]
 
@@ -1260,7 +1246,7 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
     listings, focal_listing_id = _chat_listings(chat_id, principal_id)
     focal = next((lst for lst in listings if lst["listing_id"] == focal_listing_id), None)
 
-    # Stance from OWNERSHIP of the focal listing (deterministic).
+    # Stance from ownership of the focal listing (deterministic).
     stance = "neutral"
     strategy: str | None = None
     focal_mandate: dict = {}
@@ -1278,8 +1264,8 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
     mandates = _in_play_mandates(principal_id, listings)
     namespace = {"sell_side": "seller", "buy_side": "buyer"}.get(stance, "general")
 
-    # Mini CRM (2026-07-08): the focal deal's stage + standing agent-disclosed offers
-    # + honest-urgency count. PRIVATE context; defensive so a deals hiccup never
+    # Mini CRM: the focal deal's stage + standing agent-disclosed offers + the
+    # honest-urgency count. Private context; defensive so a deals hiccup never
     # blocks the turn.
     deal_ctx = {"deal": None, "negotiation": None, "other_active_deals": 0}
     try:
@@ -1315,9 +1301,9 @@ def _responder_plan(chat_id: int, inbound_message_id: int) -> dict:
 
 
 def _responder_assess(listing_id: int, strategy: str | None) -> dict:
-    """Deterministic wholesale verdict for the FOCAL listing (buy-side). No ownership
+    """Deterministic wholesale verdict for the focal listing (buy-side). No ownership
     check — the focal listing is the counterparty's on the buy side. Attaches the
-    grounded `max_offer` (the price at which margin == threshold): the PRIVATE anchor
+    grounded `max_offer` (the price at which margin == threshold): the private anchor
     Stage 1 negotiates from — never disclosed, never in share_lines."""
     from matching.engine import assess_deal
 
@@ -1334,7 +1320,7 @@ def _responder_assess(listing_id: int, strategy: str | None) -> dict:
 
 
 def _responder_estimate(listing_id: int) -> dict:
-    """Market value + a few comps for the FOCAL listing (sell-side price defense)."""
+    """Market value + a few comps for the focal listing (sell-side price defense)."""
     from catalog.models import ListingProperty
     from matching.engine import estimate_value, get_comps
 

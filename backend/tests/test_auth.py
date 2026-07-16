@@ -1,6 +1,6 @@
 """
-P0 auth gate — the email-login lifecycle, all offline (locmem email backend the
-pytest test runner installs automatically; `mail.outbox` captures sends).
+Email-login lifecycle, all offline (pytest installs the locmem email backend;
+`mail.outbox` captures sends).
 
 Coverage:
   * UserManager: create_user normalizes/lowercases email, hashes password,
@@ -9,7 +9,7 @@ Coverage:
   * unverified login is gated (403).
   * duplicate email (any case) is rejected at register.
   * resend re-issues a verification email; always 200 (no account leak).
-  * password reset -> confirm -> login with the NEW password; the reset token
+  * password reset -> confirm -> login with the new password; the reset token
     is single-use (a second confirm fails).
 """
 

@@ -1,11 +1,11 @@
 """
 Prompt-store tests (LLM-free, network-free — the suite runs keyless).
 
-The keystone is PARITY: with Langfuse disabled, ``prompt_store`` must produce
-byte-identical output to the legacy composition functions in
+The keystone is parity: with Langfuse disabled, ``prompt_store`` must produce
+byte-identical output to the fallback composition functions in
 ``polaris_agent.prompts`` for every surface. That guarantee is what makes the
 Langfuse integration a pure overlay — outage, missing keys, or tests all
-degrade to exactly the pre-integration behavior.
+degrade to the code fallbacks with zero behavior change.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ async def test_parity_responder_triage_and_screen():
 
 
 def test_parity_outreach_summary():
-    """Must render exactly the inline prompt ai.functions previously built."""
+    """Renders exactly the inline outreach-summary prompt ai.functions falls back to."""
     got = prompt_store.compile(
         "outreach/summary", label="12 Birch Ln", sent="4", skipped="1", failed="0"
     ).text

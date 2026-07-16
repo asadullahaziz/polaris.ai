@@ -4,9 +4,8 @@ set -euo pipefail
 # Compose gates start-up on postgres/redis healthchecks (depends_on:
 # service_healthy), so the DB is ready by the time we migrate.
 
-# v2 NOTE: migrations are generated in-container here because Django (GDAL) can't
-# run on the host. This keeps `docker compose up` reproducible from a fresh clone.
-# Each phase commits its migrations and reviews them against the schema.
+# Migrations are generated in-container because Django (GDAL) can't run on the
+# host. This keeps `docker compose up` reproducible from a fresh clone.
 echo "[entrypoint] makemigrations"
 python manage.py makemigrations --noinput
 

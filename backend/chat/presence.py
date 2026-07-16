@@ -1,14 +1,14 @@
 """
-Chat presence (architecture §9a) — "presence = this chat open."
+Chat presence — "presence = this chat open."
 
 Kept in Redis, keyed `presence:{chat_id}:{user_id}`, with a TTL so a dead socket
 self-heals. The ChatConsumer sets it on focus/typing and clears it on blur/disconnect
-(async paths); the commit gate re-reads it inside its transaction (sync path,
-architecture §5). Two clients (sync + async) so both callers are native.
+(async paths); the commit gate re-reads it inside its transaction (sync path). Two
+clients (sync + async) so both callers are native.
 
-**Fail-safe = absent** (architecture §9a): a missing/ambiguous signal ⇒ the human is
-treated as away and the away-agent covers — but the Inngest grace (P4) debounces this so
-a transient blip can't fire an irreversible send.
+Fail-safe = absent: a missing/ambiguous signal ⇒ the human is treated as away and the
+away-agent covers — but the Inngest grace debounces this so a transient blip can't
+fire an irreversible send.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def _sync():
 def is_present_sync(chat_id: int, user_id: int) -> bool:
     try:
         return bool(_sync().exists(_key(chat_id, user_id)))
-    except Exception as exc:  # noqa: BLE001 - fail-safe absent (§9a)
+    except Exception as exc:  # noqa: BLE001 - fail-safe absent
         log.warning("presence read failed, treating as absent: %s", exc)
         return False
 
@@ -79,6 +79,6 @@ async def clear_present(chat_id: int, user_id: int) -> None:
 async def is_present(chat_id: int, user_id: int) -> bool:
     try:
         return bool(await _aclient().exists(_key(chat_id, user_id)))
-    except Exception as exc:  # noqa: BLE001 - fail-safe absent (§9a)
+    except Exception as exc:  # noqa: BLE001 - fail-safe absent
         log.warning("presence read failed, treating as absent: %s", exc)
         return False

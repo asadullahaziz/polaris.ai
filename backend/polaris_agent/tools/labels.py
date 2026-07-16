@@ -1,5 +1,5 @@
 """
-Human-friendly activity labels for copilot tools (2026-07-10).
+Human-friendly activity labels for copilot tools.
 
 One backend-side source of truth: the live WS event (`copilot.tool`) carries the label
 while a tool runs, and `dal.save_turn_blocks` stamps it into the persisted tool row's

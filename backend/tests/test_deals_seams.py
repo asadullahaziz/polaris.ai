@@ -1,7 +1,7 @@
 """
 Deal wiring at the four seams (LLM-free): outreach send → contacted deals (replay-
 safe); the human/agent message paths create/advance deals; `commit_reply` applies deal
-side-effects exactly once under the dedup guard; `approve_draft` applies the SAME
+side-effects exactly once under the dedup guard; `approve_draft` applies the same
 side-effects (accept → agreed; decline → lost + terminal no_fit) so the human-approved
 path keeps the CRM true; persist_draft's approval_context lands in the notification.
 """

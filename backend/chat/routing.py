@@ -1,4 +1,4 @@
-"""Chat websocket routes — the human 1:1 socket (presence + chat + P4 agent handback).
+"""Chat websocket routes — the human 1:1 socket (presence + chat + agent handback).
 Aggregated by config.routing."""
 
 from __future__ import annotations

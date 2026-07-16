@@ -1,40 +1,37 @@
 """
-Deterministic disclosure gates (architecture §5, §12) — the layers that make a
-*fooled* model harmless. Pure functions, no LLM, unit-testable in isolation. "The
-model proposes; code disposes."
+Deterministic disclosure gates — the layers that make a fooled model harmless.
+Pure functions, no LLM, unit-testable in isolation. The model proposes; code
+disposes. These gates are code on purpose: a prompt edit must never be able to
+weaken the airlock.
 
-  * policy_gate  — GUARANTEE (bounds blast radius). Stage 1 may PROPOSE a decision;
-                   this code DISPOSES. Any offer must sit within the focal mandate's
-                   bound for the agent's **stance** (buy_side ≤ ceiling; sell_side ≥
-                   floor) AND concede monotonically toward the counterparty (never
-                   walk an offer backwards); `accept` is valid only against a standing
-                   agent-disclosed counterparty offer that is itself within our bound;
-                   disclosed fields must be a subset of the closed whitelist; the
-                   action must be allowed. A manipulated Stage 1 that proposes
-                   out-of-mandate is rejected → escalate. (§12 layer 2)
-  * output_check — deterministic backstop before send. Scan the drafted body for the
-                   LITERAL values of the principal's private limits (we know them all)
-                   and block any leak; then `style_check` enforces the human-voice
-                   contract (no AI/assistant self-reference, no em/en dashes, bounded
-                   length). Catches accidental leaks and robot-voice; the real
-                   guarantee is the airlock (Stage 2 never sees any mandate).
-                   (§12 layer 5)
-  * approve_shares / render_shared_lines — the ONLY way engine numbers reach Stage 2:
-                   Stage 1 sets boolean share flags; this code verifies the data really
-                   exists in tool_results and renders the strings itself. The drafting
-                   model can cite figures but never author them.
-
-v2 rewire (P4): `role → stance`; `output_check` scans the **union of the principal's
-private limits**. 2026-07-08: negotiation actions + monotonic-concession rules,
-`no_reply`, style gate, share flags; `interest_level` removed from the whitelist.
+  * policy_gate  — Stage 1 may propose a decision; this code disposes. Any offer
+                   must sit within the focal mandate's bound for the agent's
+                   stance (buy_side ≤ ceiling; sell_side ≥ floor) and concede
+                   monotonically toward the counterparty (never walk an offer
+                   backwards); `accept` is valid only against a standing
+                   agent-disclosed counterparty offer that is itself within our
+                   bound; disclosed fields must be a subset of the closed
+                   whitelist; the action must be allowed. A manipulated Stage 1
+                   that proposes out-of-mandate is rejected → escalate.
+  * output_check — deterministic backstop before send. Scan the drafted body for
+                   the literal values of the principal's private limits (we know
+                   them all) and block any leak; then `style_check` enforces the
+                   human-voice contract (no AI/assistant self-reference, no em/en
+                   dashes, bounded length). Catches accidental leaks and
+                   robot-voice; the real guarantee is the airlock (Stage 2 never
+                   sees any mandate).
+  * approve_shares / render_shared_lines — the only way engine numbers reach
+                   Stage 2: Stage 1 sets boolean share flags; this code verifies
+                   the data really exists in tool_results and renders the strings
+                   itself. The drafting model can cite figures but never author
+                   them.
 """
 
 from __future__ import annotations
 
 import re
 
-# qualify-and-hold + structured negotiation. The agent emits `propose` for both an
-# opening offer and a counter (`counter` remains a valid Message choice, not emitted).
+# The agent emits `propose` for both an opening offer and a counter.
 ALLOWED_ACTIONS = {
     "ask",
     "inform",
@@ -47,14 +44,14 @@ ALLOWED_ACTIONS = {
     "no_reply",
 }
 # The closed disclosure whitelist (state.py DisclosedFields) — no floor/ceiling/memory
-# slot. interest_level was removed: the action carries the signal, prose never states it.
+# slot, so there is nowhere to put a secret.
 ALLOWED_DISCLOSED_FIELDS = {"must_haves", "offer_price", "availability"}
 
 # ---- Human-voice contract (style gate) ------------------------------------------
 MAX_REPLY_CHARS = 500
 _DASHES = ("—", "–")  # em dash, en dash — the loudest AI tell
 # Case-insensitive; word-bounded where a bare substring would false-positive
-# ("maintain", "said", "brain"). The UI badge already discloses the agent — the BODY
+# ("maintain", "said", "brain"). The UI badge already discloses the agent — the body
 # must read like a busy human, so any self-narration is rejected deterministically.
 BANNED_PATTERNS = [
     re.compile(p, re.IGNORECASE)
@@ -191,7 +188,7 @@ def approve_shares(decision: dict, tool_results: dict) -> dict:
 
 
 def render_shared_lines(tool_results: dict, approved: dict) -> list[str]:
-    """Deterministic, ENGINE-authored figure lines for Stage 2 to cite. Hyphens only —
+    """Deterministic, engine-authored figure lines for Stage 2 to cite. Hyphens only —
     these strings feed the drafting prompt and must themselves pass the style gate."""
     tr = tool_results or {}
     val = tr.get("valuation") or {}

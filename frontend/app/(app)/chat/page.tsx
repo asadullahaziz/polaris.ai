@@ -201,7 +201,7 @@ function ChatPageInner() {
   }
 
   async function editAndSend(m: ChatMessage) {
-    // Take over: the draft body moves into the composer as YOUR message; the draft dies.
+    // Take over: move the draft body into the composer as the user's own message; discard the draft.
     if (!activeId) return;
     setInput(m.body);
     await discardChatDraft(activeId, m.id);

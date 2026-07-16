@@ -72,7 +72,7 @@ const NUM_FIELDS = [
 
 type NumKey = (typeof NUM_FIELDS)[number][0];
 
-// Create/edit form for a buy-box. Writes support at most ONE new geo per save;
+// Create/edit form for a buy-box. Writes support at most one new geo per save;
 // existing geos are read-only over REST.
 export function BuyBoxForm({
   initial,

@@ -1,13 +1,13 @@
 """
-seed_kc — the demo-data contract (matching_and_data §4): **Kessler County, WA**.
+seed_kc — the Kessler County, WA demo world.
 
 A closed fictional demo world on real King County bones: the densest N_CLUSTERS zips
 are subsampled to ROWS_PER_CLUSTER properties each (~3.2k total) and rebranded as
 small fictional towns. Real prices/attrs/geometry/sale dates keep the comp engine
 credible; the identity layer (town names, street addresses) is synthetic.
 
-  * Every property gets a deterministic, RNG-free street address — and, critically,
-    `address_norm = normalize_address(address_raw)`, so EVERY seeded property is
+  * Every property gets a deterministic, RNG-free street address — and
+    `address_norm = normalize_address(address_raw)`, so every seeded property is
     resolvable through `lookup_property` / `resolve_geo` / `/api/properties/search`.
   * ~40 investor personas (25 history-only + 15 with buy-box + mandate) built from
     ARCHETYPES that deliberately vary the ranking features (bought-in-area, volume,
@@ -16,18 +16,18 @@ credible; the identity layer (town names, street addresses) is synthetic.
     so live agent behavior is anchored to inspectable instructions.
   * ~15 active listings under 3 sellers, priced below market for wholesale spread,
     each with an attribute-composed description + an enriched seller mandate.
-  * **The hero path:** kc_seller_1 owns a flagship listing whose asking price is
+  * The hero path: kc_seller_1 owns a flagship listing whose asking price is
     calibrated at seed time to margin HERO_TARGET_MARGIN against the live comp ARV,
     so kc_buyer_1..4 (all cluster 0) deterministically diverge on it — qualify /
     hold / decline / gate-impasse — purely by strategy threshold + mandate ceiling.
-  * **Pre-warm:** one closed deal (kc_seller_1 × kc_buyer_3) + one stale outreach
+  * Pre-warm: one closed deal (kc_seller_1 × kc_buyer_3) + one stale outreach
     thread, seeded through the pure-sync chat/deals services and backdated, so
     /deals and the inbox look lived-in from the first frame.
 
 Two hard requirements:
-  * **Date rebase (§4.4):** the source sale window is linearly remapped onto the last
+  * Date rebase: the source sale window is linearly remapped onto the last
     ~24 months ending at the demo date, so `recency` is meaningful.
-  * **Idempotent / re-runnable:** address generation consumes no RNG (pure index
+  * Idempotent / re-runnable: address generation consumes no RNG (pure index
     arithmetic over stably-sorted rows), so re-runs regenerate byte-identical rows and
     `bulk_create(ignore_conflicts=True)` is a true no-op; the behavioral layer is
     guarded by a `Sale(source=seed_kc)` sentinel. `--reset` truncates seed rows first.
@@ -68,13 +68,13 @@ from . import _seed_content as content
 
 SEED_SOURCE = "seed_kc"
 COUNTY_FIPS = "53033"  # engine keys comps off this; the fictional identity is naming-only
-SEED_PASSWORD = "polaris123"  # dev/demo only; documented in CLAUDE.md
+SEED_PASSWORD = "polaris123"  # dev/demo only
 RNG_SEED = 1337
 REBASE_MONTHS = 24
 N_CLUSTERS = 8
 ROWS_PER_CLUSTER = 400  # the single density knob (~3.2k properties total)
 N_REGISTERED = 15
-N_PROSPECTS = 25  # ex-prospects, now registered users with history only
+N_PROSPECTS = 25  # history-only registered users (no buy-box)
 N_SELLERS = 3
 N_LISTINGS = 15
 LISTING_DISCOUNT = Decimal("0.80")  # asking below market → wholesale spread
@@ -554,7 +554,7 @@ class Command(BaseCommand):
                     )
                 )
 
-        # ~25 ex-prospect users — history only, rank on pure behavior (no buy-box).
+        # ~25 history-only users — rank on pure behavior (no buy-box).
         # Profile texture only (bio/company); no agent_instructions — they are extras,
         # not demo drivers.
         for i in range(N_PROSPECTS):
@@ -575,7 +575,7 @@ class Command(BaseCommand):
             sample_sales(cluster, archetype, strategy, buyer=u)
 
         # ~15 registered buyers — history + buy-box + mandate. The first four are the
-        # HERO COHORT: all in cluster 0 so every one ranks for the flagship, with
+        # hero cohort: all in cluster 0 so every one ranks for the flagship, with
         # strategies/ceilings engineered to diverge on it (see content.HERO_BUYERS).
         # The rest keep the classic rounds over clusters 1..7: round 0 = the town's
         # anchor flipper (top of the ranked table); round 1 = lapsed/out-of-towner

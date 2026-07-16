@@ -1,14 +1,13 @@
 """
-users — `User` (email login) + `UserProfile` (v2 target schema §users).
+users — `User` (email login) + `UserProfile`.
 
-v2 replaces v1's `AbstractUser`/username-keyed `AppUser` with an
-`AbstractBaseUser` whose `USERNAME_FIELD` is the email — removing the vestigial
-`username` hack v1 apologized for. ONE account type, no stored role: a user's
-"side" (buyer/seller) is derived at read time, never stored.
+`User` is an `AbstractBaseUser` whose `USERNAME_FIELD` is the email. One account
+type, no stored role: a user's "side" (buyer/seller) is derived at read time,
+never stored.
 
 The governance knobs the away-responder + copilot read (`auto_reply_when_away`,
-`agent_autonomy`, `agent_instructions`) live on `UserProfile`, not on `Mandate`
-(revisions 2026-07-03): they are user-level, not per-deal.
+`agent_autonomy`, `agent_instructions`) live on `UserProfile`, not on `Mandate`:
+they are user-level, not per-deal.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from django.utils import timezone
 
 from .managers import UserManager
 
-# preferred_channel values (features §E #25). in_app only is live in v2.
+# preferred_channel values; only in_app is live.
 CHANNELS = [
     ("in_app", "in_app"),
     ("sms", "sms"),
@@ -27,8 +26,7 @@ CHANNELS = [
     ("whatsapp", "whatsapp"),
 ]
 
-# agent_autonomy — whether the agent auto-sends or drafts for the user's approval
-# (moved off Mandate; user-level per revisions).
+# agent_autonomy — whether the agent auto-sends or drafts for the user's approval.
 AUTONOMY_CHOICES = [
     ("draft_for_approval", "draft_for_approval"),
     ("auto_send", "auto_send"),
@@ -79,12 +77,12 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 class UserProfile(models.Model):
     """The lean auth row's companion: the shared-context store the copilot
-    reads/writes, plus the user-level AI governance knobs (revisions §users)."""
+    reads/writes, plus the user-level AI governance knobs."""
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
 
-    # Shared context store (features §E #22): UI and agent tools read/write this
-    # same JSON — single source of truth.
+    # Shared context store: UI and agent tools read/write this same JSON —
+    # single source of truth.
     preferences = models.JSONField(default=dict, blank=True)
 
     # Public-ish profile fields (settings › Account).
@@ -95,18 +93,18 @@ class UserProfile(models.Model):
     # AI governance (settings › AI). User-level, not per-deal.
     #   auto_reply_when_away — the away-responder enable; presence decides "away".
     #   agent_autonomy       — auto-send vs. draft-for-approval for agent replies.
-    #   agent_instructions   — global free-text guidance injected into BOTH the
+    #   agent_instructions   — global free-text guidance injected into both the
     #                          copilot and the away-responder prompts, layered
-    #                          UNDER per-deal Mandate.instructions.
+    #                          under per-deal Mandate.instructions.
     #   agent_reply_cap      — max away-agent replies (sender=this user) since this
     #                          user's last human message, before the agent escalates
     #                          instead. Bounds the agent↔agent away-cover loop; read
-    #                          as the default `n` in `reply_cap_reached` (P4).
+    #                          as the default `n` in `reply_cap_reached`.
     auto_reply_when_away = models.BooleanField(default=True)
     agent_autonomy = models.CharField(max_length=32, default="auto_send", choices=AUTONOMY_CHOICES)
     agent_instructions = models.TextField(blank=True, default="")
-    # Default 6 (2026-07-08, was 3): negotiation needs a propose/counter exchange's
-    # worth of headroom before the agent hands to the human.
+    # Default 6: negotiation needs a propose/counter exchange's worth of headroom
+    # before the agent hands to the human.
     agent_reply_cap = models.PositiveSmallIntegerField(default=6)
 
     updated_at = models.DateTimeField(auto_now=True)

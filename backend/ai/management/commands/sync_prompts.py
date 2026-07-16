@@ -8,7 +8,7 @@ fresh Langfuse project one command away and keeps drift visible:
   * missing in Langfuse         -> created (fragments first, so composability
                                    tags resolve when the composed surfaces land)
   * identical to code           -> skipped
-  * differs from code (UI edit) -> reported ONLY. `--update` appends a NEW
+  * differs from code (UI edit) -> reported only. `--update` appends a new
                                    version (history preserved, never overwrites);
                                    `--promote` also moves the label to it.
 

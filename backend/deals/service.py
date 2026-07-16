@@ -8,7 +8,7 @@ break message delivery or the exactly-one-reply invariant):
   * chat/services.post_human_message / post_agent_message → on_message(...)
   * chat/responder_service.commit_reply / approve_draft → on_message + apply_agent_action
 
-Automatic transitions are FORWARD-ONLY (`advance_stage`); `set_stage_manual` is the
+Automatic transitions are forward-only (`advance_stage`); `set_stage_manual` is the
 human override and may move anywhere. `lost` is reachable automatically only from the
 active stages; `closed` is manual-only.
 """
@@ -68,7 +68,7 @@ def ensure_deal(
 
 
 def advance_stage(deal, target: str):
-    """SYSTEM path: forward-only. No-op unless `target` is strictly ahead of the current
+    """System path: forward-only. No-op unless `target` is strictly ahead of the current
     stage; `closed`/`lost` are sticky; `lost` is reachable only from an active stage
     (a deal already agreed falls through only by human override)."""
     current = deal.stage
@@ -96,7 +96,7 @@ def set_stage_manual(deal, stage: str):
 
 
 def record_disclosed_offer(deal, *, by_user_id: int, price):
-    """Record an AGENT-DISCLOSED offer on the correct side. Human free-text offers are
+    """Record an agent-disclosed offer on the correct side. Human free-text offers are
     never parsed into this."""
     field = "last_offer_by_buyer" if by_user_id == deal.buyer_id else "last_offer_by_seller"
     setattr(deal, field, price)
@@ -204,7 +204,8 @@ def apply_agent_action(
 
 
 def responder_context(chat_id: int, focal_listing_id: int | None, principal_id: int) -> dict:
-    """What Graph 2 needs from the CRM, stance-mapped to the principal. PRIVATE context.
+    """What the responder graph needs from the CRM, stance-mapped to the principal.
+    Private context.
     `other_active_deals` grounds honest urgency ("there's other interest") — the count
     of OTHER live deals on the same listing."""
     from .models import Deal

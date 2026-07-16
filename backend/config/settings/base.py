@@ -3,7 +3,7 @@ Base settings — shared across all environments.
 
 Environment-specific overrides live in dev.py / prod.py. Values that differ
 between deploys (secrets, hosts, DB creds) come from the environment so a fresh
-clone + `docker compose up` reproduces the identical stack (implementation_plan §1).
+clone + `docker compose up` reproduces the identical stack.
 """
 
 from __future__ import annotations
@@ -58,11 +58,8 @@ THIRD_PARTY_APPS = [
     "channels",
 ]
 
-# One Django app per domain — the full standardized v2 layout, registered from
-# P0 as clean skeletons. Each app's models land in its phase (empty models ⇒ no
-# migration until then): users [P0] · catalog [P1] · ai [P2/P5] · chat [P3/P4] ·
-# notifications [P3] · orchestration [P5/P6]. `matching` and `polaris_agent` are
-# plain packages, NOT Django apps. The v1 port source lives in `_v1_reference/`.
+# One Django app per domain. `matching` and `polaris_agent` are plain packages,
+# not Django apps.
 LOCAL_APPS = [
     "users",
     "catalog",
@@ -108,14 +105,14 @@ WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
 # ---------------------------------------------------------------------------
-# Custom user — email is the login (v2). AbstractBaseUser, defined before the
+# Custom user — email is the login. AbstractBaseUser, defined before the
 # first migrate to avoid a painful USERNAME_FIELD swap on a live DB.
 # ---------------------------------------------------------------------------
 AUTH_USER_MODEL = "users.User"
 
 # ---------------------------------------------------------------------------
-# Database — PostGIS backend (GeoDjango). App tables AND the LangGraph
-# checkpointer share this one DB (implementation_plan §1).
+# Database — PostGIS backend (GeoDjango). App tables and the LangGraph
+# checkpointer share this one DB.
 # ---------------------------------------------------------------------------
 DATABASES = {
     "default": {
@@ -144,7 +141,7 @@ CHANNEL_LAYERS = {
 
 # ---------------------------------------------------------------------------
 # LangGraph checkpointer pool (separate from the ORM connection).
-# Consumed by polaris_agent.checkpointer at ASGI startup (P0.8).
+# Consumed by polaris_agent.checkpointer at ASGI startup.
 # ---------------------------------------------------------------------------
 CHECKPOINTER_DB_URL = env(
     "CHECKPOINTER_DB_URL",
@@ -159,7 +156,7 @@ CHECKPOINTER_DB_URL = env(
 CHECKPOINTER_POOL_MAX_SIZE = int(env("CHECKPOINTER_POOL_MAX_SIZE", "10") or 10)
 
 # ---------------------------------------------------------------------------
-# DRF — session-cookie auth (implementation_plan §4.1).
+# DRF — session-cookie auth.
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -219,8 +216,8 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # ---------------------------------------------------------------------------
-# Provider-agnostic LLM wiring (polaris_agent.models). #5 deferred: keep both
-# OpenRouter and native-Anthropic paths swappable by config.
+# Provider-agnostic LLM wiring (polaris_agent.models) — the OpenRouter and
+# native-Anthropic paths stay swappable by config.
 # ---------------------------------------------------------------------------
 LLM_PROVIDER = env("LLM_PROVIDER", "openrouter")  # openrouter | anthropic
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
@@ -243,7 +240,7 @@ LANGFUSE_PROMPT_LABEL = env("LANGFUSE_PROMPT_LABEL", "production")
 LANGFUSE_PROMPT_CACHE_TTL = int(env("LANGFUSE_PROMPT_CACHE_TTL", "60") or 60)
 
 # ---------------------------------------------------------------------------
-# Email — hand-rolled verification / password-reset tokens (auth design §Auth).
+# Email — hand-rolled verification / password-reset tokens.
 # SendGrid via Django's SMTP EmailBackend in dev/prod; the pytest test runner
 # swaps in the locmem backend automatically, so `mail.outbox` works offline.
 # When no SendGrid key is present we fall back to the console backend (dev.py),
@@ -273,9 +270,9 @@ INNGEST_APP_ID = env("INNGEST_APP_ID", "polaris")
 INNGEST_IS_PRODUCTION = env_bool("INNGEST_IS_PRODUCTION", False)
 
 # ---------------------------------------------------------------------------
-# Auto-responder (Graph 2) presence grace window (architecture §9a). The Inngest
-# handler waits this long for the human to show up before covering for them. Spec
-# is 45s; env-overridable so a live demo can shorten it.
+# Auto-responder presence grace window. The Inngest handler waits this long for
+# the human to show up before covering for them. Default 45s; env-overridable so
+# a live demo can shorten it.
 # ---------------------------------------------------------------------------
 RESPONDER_GRACE_SECONDS = int(env("RESPONDER_GRACE_SECONDS", "45") or 45)
 
@@ -283,14 +280,14 @@ RESPONDER_GRACE_SECONDS = int(env("RESPONDER_GRACE_SECONDS", "45") or 45)
 # Copilot confirm-every-write TTL. A pending write-confirm nobody answers auto-expires
 # after this long (lazy: enforced on reopen / next send / resume — no background job), so
 # an approval popup never hangs forever. Default 24h; env-overridable so a demo can shorten
-# it. Must stay LONGER than any future checkpointer TTL (see the deferred Redis note).
+# it. Must stay longer than any checkpointer TTL.
 # ---------------------------------------------------------------------------
 COPILOT_CONFIRM_TTL_SECONDS = int(env("COPILOT_CONFIRM_TTL_SECONDS", "86400") or 86400)
 
 # ---------------------------------------------------------------------------
-# Copilot transcript context policy (2026-07-10). Tool calls/results are persisted as
+# Copilot transcript context policy. Tool calls/results are persisted as
 # transcript blocks and re-fed to the model, so it remembers what tools returned in
-# past turns. The last N user turns rehydrate at FULL fidelity (tool traffic included);
+# past turns. The last N user turns rehydrate at full fidelity (tool traffic included);
 # older turns collapse to text-only so long chats never degrade in latency or cost.
 # Individual tool results are size-capped on rehydrate (they can be whole comp tables).
 # ---------------------------------------------------------------------------

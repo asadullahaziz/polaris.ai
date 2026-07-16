@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # System libraries:
-#   * GDAL / GEOS / PROJ  -> GeoDjango (review #8: bake into the image, not runtime)
+#   * GDAL / GEOS / PROJ  -> GeoDjango (baked into the image, not installed at runtime)
 #   * curl for debugging (health probe uses python, so curl is optional)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         binutils \

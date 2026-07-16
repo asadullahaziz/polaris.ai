@@ -1,5 +1,5 @@
 """
-Custom manager for the email-login `User` (v2 auth design).
+Custom manager for the email-login `User`.
 
 `create_user`/`create_superuser` normalize the email (lowercased so exact-match
 authentication is case-insensitive) and set the password. `use_in_migrations`

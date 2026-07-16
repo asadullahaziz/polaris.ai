@@ -1,5 +1,5 @@
 """
-P1 catalog REST — multi-property create, detail, fetch-existing dedup lookup, mandate.
+Catalog REST — multi-property create, detail, fetch-existing dedup lookup, mandate.
 
 LLM-free (pure ORM/REST). The engine paths are covered in test_matching.
 """
@@ -165,7 +165,7 @@ def other_client(db):
 
 @pytest.mark.django_db
 def test_marketplace_visibility(client, other_client):
-    """Listings are a marketplace: everyone sees ACTIVE listings; drafts stay private.
+    """Listings are a marketplace: everyone sees active listings; drafts stay private.
     The mandate (floor/ceiling/instructions) is serialized only for the owner."""
     active = client.post(
         LISTINGS,
@@ -194,7 +194,7 @@ def test_marketplace_visibility(client, other_client):
     mine = client.get(LISTINGS, {"mine": "1"}).data
     assert {r["id"] for r in mine} == {active["id"], draft["id"]}
 
-    # Non-owner detail: visible for active, but the PRIVATE mandate is withheld.
+    # Non-owner detail: visible for active, but the private mandate is withheld.
     det = other_client.get(f"{LISTINGS}{active['id']}/")
     assert det.status_code == 200
     assert det.data["mandate"] is None

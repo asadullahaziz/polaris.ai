@@ -154,8 +154,7 @@ function NewListingInner() {
     }
   }
 
-  // Arriving with ?address= (the buyers-page handoff) auto-runs the lookup so
-  // the matched card is already waiting — zero re-typing.
+  // Arriving with ?address= (the buyers-page handoff) auto-runs the lookup on mount.
   const autoLooked = useRef(false);
   useEffect(() => {
     if (autoLooked.current) return;
@@ -356,7 +355,7 @@ function NewListingInner() {
                 value={lookupAddress}
                 onChange={setLookupAddress}
                 onSelect={(p: PropertySearchResult) => {
-                  // A picked suggestion IS the lookup hit — skip the roundtrip.
+                  // A picked suggestion is already a lookup hit — skip the roundtrip.
                   setLookupAddress(p.address_raw);
                   setLookup({ found: true, normalized: p.address_norm, property: p });
                 }}

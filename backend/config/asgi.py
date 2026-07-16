@@ -1,12 +1,12 @@
 """
-ASGI entrypoint — the single served application (P0.6).
+ASGI entrypoint — the single served application.
 
 ProtocolTypeRouter fans out by scope type:
   * http      -> Django (DRF + Inngest serve mount + admin)
   * websocket -> Channels: AllowedHostsOriginValidator(AuthMiddlewareStack(...))
                  Built-in AuthMiddlewareStack reads the `sessionid` cookie into
-                 scope["user"] — no custom socket auth (implementation_plan §4.2).
-  * lifespan  -> opens/closes the shared LangGraph checkpointer pool (P0.8).
+                 scope["user"] — no custom socket auth.
+  * lifespan  -> opens/closes the shared LangGraph checkpointer pool.
 """
 
 import os
@@ -15,7 +15,7 @@ from django.core.asgi import get_asgi_application
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
 
-# Initialise Django (populates apps) BEFORE importing consumers/models.
+# Initialise Django (populates apps) before importing consumers/models.
 django_asgi_app = get_asgi_application()
 
 from channels.auth import AuthMiddlewareStack  # noqa: E402

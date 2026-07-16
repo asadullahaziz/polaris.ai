@@ -1,23 +1,21 @@
 """
-Deterministic comping / valuation / ranking engine (matching_and_data §2–3).
+Deterministic comping / valuation / ranking engine.
 
 "The engine scores, the LLM narrates." Pure SQL/PostGIS/Python — no model calls —
 so it is reproducible, explainable, and unit-testable without an LLM. `polaris_agent`
-only *wraps* these as tools and narrates the breakdown.
+only wraps these as tools and narrates the breakdown.
 
 Public API:
-  * get_comps(subject, ...)          → nearest recent similar SOLD properties, staged fallback.
+  * get_comps(subject, ...)          → nearest recent similar sold properties, staged fallback.
   * estimate_value(subject, ...)     → a value range from comp $/sqft (`arv=True` = after-repair).
   * rank_buyers(listing_id, ...)     → the buyer-matching engine over a persisted listing.
-  * rank_buyers_for_attrs(...)       → the SAME engine over ad-hoc attrs (the `/buyers` matcher):
+  * rank_buyers_for_attrs(...)       → the same engine over ad-hoc attrs (the `/buyers` matcher):
                                        address→geo + price (+ optional condition/beds/sqft),
                                        no `Listing` persisted.
   * assess_deal(listing_id, ...)     → the away-responder's wholesale math → qualify/hold/decline.
 
-v2 rewire: registered **users only** (no prospects); `Sale`/`BuyBox` live in `catalog`;
-`_relationships` reads chat pairs (inert — returns empty — until the `chat` app lands in P3).
 `subject` is a `catalog.Property` or a dict of {geom, beds, sqft, grade, waterfront,
-condition, pk} — so it works on a saved property OR freshly-extracted attributes.
+condition, pk} — so it works on a saved property or freshly-extracted attributes.
 """
 
 from __future__ import annotations
@@ -36,8 +34,8 @@ from catalog.models import Property
 COUNTY_FIPS = "53033"
 _METERS_PER_MILE = 1609.344
 
-# Staged relaxation (matching_and_data §3): widen radius → relax sqft → relax grade →
-# relax recency, recording the note the LLM discloses ("had to look 3 mi out").
+# Staged relaxation: widen radius → relax sqft → relax grade → relax recency,
+# recording the note the LLM discloses ("had to look 3 mi out").
 # (radius_mi, sqft_tol, grade_tol, months, note)
 _STAGES = [
     (1.0, 0.20, 2, 6, "1mi · sqft±20% · grade±2 · 6mo"),
@@ -93,7 +91,7 @@ def _comp_dict(p: Property) -> dict:
 
 
 def get_comps(subject, *, min_n: int = 5, limit: int = 25) -> dict:
-    """Nearest recent SOLD properties similar to `subject`. Auto-expands until it has
+    """Nearest recent sold properties similar to `subject`. Auto-expands until it has
     at least `min_n`, recording which stage of relaxation was used."""
     a = _attrs(subject)
     today = timezone.now().date()
@@ -193,12 +191,12 @@ def estimate_value(subject, *, arv: bool = False, min_n: int = 5) -> dict:
 
 
 # =====================================================================================
-# Buyer ranking (matching_and_data §2) — deterministic + explainable.
+# Buyer ranking — deterministic + explainable.
 #
 # "The engine scores, the LLM narrates." score = Σ (weight × normalized_feature). The
 # behavioral features (geo + price + strategy + recency + volume = 0.83) dominate, so
 # the engine is behavioral-first; buy-box completeness is a bonus/tie-breaker that
-# applies whenever the buyer has a box (v2: every candidate is a registered user).
+# applies whenever the buyer has a box.
 # =====================================================================================
 
 RANK_WEIGHTS = {
@@ -355,7 +353,7 @@ def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> 
 def rank_buyers_multi(
     listing_ids: list[int], *, limit_per_listing: int = 10, radius_mi: float = 5.0
 ) -> dict:
-    """Rank buyers for SEVERAL listings and merge per buyer — the deterministic 'who
+    """Rank buyers for several listings and merge per buyer — the deterministic 'who
     matches what' matrix for multi-listing outreach. A buyer 'matches' a listing by
     appearing in that listing's own top-`limit_per_listing` ranking; each match keeps its
     per-listing score + reason, so the caller can send each buyer only the listings they
@@ -507,8 +505,8 @@ def _load_boxes(user_ids):
 
 def _relationships(seller_id, user_ids) -> set[int]:
     """Registered buyers with an existing chat pairing to this seller (the 0.10
-    'warm' signal). Pair-based (P3): a `Chat` exists whose two `ChatMember` rows are
-    {seller_id, candidate}. Scoring math unchanged — this just turns the weight live."""
+    'warm' signal): a `Chat` exists whose two `ChatMember` rows are
+    {seller_id, candidate}."""
     if seller_id is None or not user_ids:
         return set()
     from chat.models import ChatMember
@@ -584,9 +582,9 @@ def _score_candidate(*, user_id, name, sales, box, related, attrs, price, today,
 
 
 # =====================================================================================
-# Deal assessment (matching_and_data §3) — the away-responder's qualify/hold/decline
-# verdict. Deterministic wholesale math over the same comp engine `estimate_value` uses,
-# so Stage 1's decision is grounded, not vibes. No LLM: the model narrates, never computes.
+# Deal assessment — the away-responder's qualify/hold/decline verdict. Deterministic
+# wholesale math over the same comp engine `estimate_value` uses, so Stage 1's decision
+# is grounded, not vibes. No LLM: the model narrates, never computes.
 # =====================================================================================
 
 # Rehab $/sqft by KC condition (1=full gut … 5=turnkey): a value-add deal costs more
@@ -619,7 +617,7 @@ def assess_deal(listing_id: int, *, strategy: str | None = None, min_n: int = 5)
 
     `strategy` (the buyer's dominant strategy) picks the margin threshold; the caller
     derives it from the buyer's buy-box / purchase history. Missing inputs (no ARV,
-    thin comps, no asking) → **hold and ask**, never a blind decline.
+    thin comps, no asking) → hold and ask, never a blind decline.
     """
     from catalog.models import Listing, ListingProperty
 

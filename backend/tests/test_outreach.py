@@ -1,21 +1,20 @@
 """
-Outreach ledger + fan-out (Graph 3), reshaped 2026-07-07 to EXPLICIT recipients: the
-caller (model/UI) selects who gets what — `[{user_id, listing_ids, body?}]` — and the
-service enforces truth at commit. LLM-free: the invariant core (`ai.outreach_service`)
-is pure/sync, so everything here runs without the Inngest dev server.
+Outreach ledger + fan-out. Recipients are explicit: the caller (model/UI) selects
+who gets what — `[{user_id, listing_ids, body?}]` — and the service enforces truth
+at commit. LLM-free: the invariant core (`ai.outreach_service`) is pure/sync, so
+everything here runs without the Inngest dev server.
 
 Covered:
   * `engine.rank_buyers_multi` — the deterministic per-buyer 'who matches what' merge;
   * launch → `awaiting_approval` + one ledger row per (buyer, listing) pair + engine
     score/reason annotation + a seller approval notification; strict validation;
-  * `send_to_buyer` → ONE opener per buyer covering exactly the surviving listings
-    (multi-listing = multiple attachments on one message) — THE per-buyer matching
-    behavior: a buyer matched to A only gets A; a buyer matched to A+B gets one message
-    with both attached;
-  * the LEDGER GUARANTEE per pair — an already-reached (buyer, listing) drops out of a
+  * `send_to_buyer` → one opener per buyer covering exactly the surviving listings
+    (multi-listing = multiple attachments on one message): a buyer matched to A only
+    gets A; a buyer matched to A+B gets one message with both attached;
+  * the ledger guarantee per pair — an already-reached (buyer, listing) drops out of a
     later campaign's attachments (partial overlap sends only the new listing);
   * idempotent replay; one-pair-chat reuse; approve/cancel gates; dispatch/outcome at
-    buyer granularity; the confirm-gated `launch_outreach_campaign` tool commits NOTHING on decline.
+    buyer granularity; the confirm-gated `launch_outreach_campaign` tool commits nothing on decline.
 """
 
 from __future__ import annotations
@@ -210,7 +209,7 @@ def test_send_to_buyer_opens_pair_chat_with_listing_attachment():
     rec = OutreachRecipient.objects.get(campaign_id=res["campaign_id"])
     assert rec.status == "sent" and rec.chat_id == chat.id and rec.sent_at is not None
 
-    # The opener is an AGENT message sent on the seller's behalf, listing attached.
+    # The opener is an agent message sent on the seller's behalf, listing attached.
     msg = Message.objects.get(id=out["opener_message_id"])
     assert msg.kind == "agent" and msg.sender_id == seller.id
     assert msg.action == "inform" and msg.status == "sent"
@@ -222,8 +221,8 @@ def test_send_to_buyer_opens_pair_chat_with_listing_attachment():
 
 @pytest.mark.django_db
 def test_multi_listing_send_matches_each_buyer_to_their_listings():
-    """THE per-buyer matching behavior: one campaign over two listings — the buyer matched
-    to both gets ONE message with BOTH attached; the buyer matched to one gets only it."""
+    """Per-buyer matching: one campaign over two listings — the buyer matched to both
+    gets one message with both attached; the buyer matched to one gets only it."""
     seller = _user("seller@x.com")
     la = _listing(seller, apn="a", address="1 A St", geo=GEO_A)
     lb = _listing(seller, apn="b", address="2 B St", geo=GEO_B)
@@ -238,10 +237,10 @@ def test_multi_listing_send_matches_each_buyer_to_their_listings():
     out_amy = svc.send_to_buyer(res["campaign_id"], amy.id)
     out_bo = svc.send_to_buyer(res["campaign_id"], bo.id)
 
-    # Amy: one message, ONLY listing A attached.
+    # Amy: one message, only listing A attached.
     msg_amy = Message.objects.get(id=out_amy["opener_message_id"])
     assert [a.listing_id for a in msg_amy.attachments.all()] == [la.id]
-    # Bo: ONE message covering BOTH listings.
+    # Bo: one message covering both listings.
     assert out_bo["status"] == "sent" and set(out_bo["listing_ids"]) == {la.id, lb.id}
     msg_bo = Message.objects.get(id=out_bo["opener_message_id"])
     assert {a.listing_id for a in msg_bo.attachments.all()} == {la.id, lb.id}
@@ -258,7 +257,7 @@ def test_multi_listing_send_matches_each_buyer_to_their_listings():
 @pytest.mark.django_db
 def test_send_to_buyer_is_idempotent_on_replay():
     """Inngest is at-least-once → a replayed send must never double-post the opener or the
-    attachments, and the ledger rows stay a single SENT each."""
+    attachments, and each ledger row flips to sent exactly once."""
     seller = _user("seller@x.com")
     la = _listing(seller, apn="a", address="1 A St")
     lb = _listing(seller, apn="b", address="2 B St", geo=GEO_B)
@@ -283,7 +282,7 @@ def test_send_to_buyer_is_idempotent_on_replay():
 @pytest.mark.django_db
 def test_ledger_partial_overlap_sends_only_the_new_listing():
     """The pair-level ledger: buyer already reached for listing A → a later campaign
-    selecting (A, B) for them stages A as skipped and the send attaches ONLY B."""
+    selecting (A, B) for them stages A as skipped and the send attaches only B."""
     seller = _user("seller@x.com")
     la = _listing(seller, apn="a", address="1 A St")
     lb = _listing(seller, apn="b", address="2 B St", geo=GEO_B)
@@ -303,7 +302,7 @@ def test_ledger_partial_overlap_sends_only_the_new_listing():
     out = svc.send_to_buyer(r2["campaign_id"], buyer.id)
     assert out["status"] == "sent" and out["listing_ids"] == [lb.id]
     msg = Message.objects.get(id=out["opener_message_id"])
-    assert [a.listing_id for a in msg.attachments.all()] == [lb.id]  # ONLY the new one
+    assert [a.listing_id for a in msg.attachments.all()] == [lb.id]  # only the new one
 
     # Full overlap (a third campaign, only A) → nothing to send at all.
     r3 = _launch(seller, [_spec(buyer, la)])
@@ -335,8 +334,8 @@ def test_send_layer_recheck_blocks_a_stale_pending_row():
 
 @pytest.mark.django_db
 def test_second_outreach_to_same_buyer_reuses_the_pair_chat():
-    """Two campaigns to the same buyer share the ONE pair chat (revisions #3): the second
-    opener attaches its listing to the same chat, not a new one."""
+    """Two campaigns to the same buyer share the one pair chat: the second opener
+    attaches its listing to the same chat, not a new one."""
     seller = _user("seller@x.com")
     l1 = _listing(seller, apn="a", address="1 A St")
     l2 = _listing(seller, apn="b", address="2 B St")
@@ -400,7 +399,7 @@ def test_dispatch_info_outcome_and_finish_are_buyer_grained():
     assert info["status"] == "sending" and info["seller_id"] == seller.id
     assert info["listing_ids"] == sorted([la.id, lb.id])
     assert info["listing_addresses"] == ["1 A St", "2 B St"]
-    # The send unit is the BUYER (2 buyers, 3 pairs), best rank first.
+    # The send unit is the buyer (2 buyers, 3 pairs), best rank first.
     assert info["buyer_ids"] == [b1.id, b2.id]
 
     for uid in info["buyer_ids"]:
@@ -419,7 +418,7 @@ def test_launch_outreach_campaign_tool_is_registered_and_confirm_gated():
     names = {t.name for t in tools_for("copilot", seller.id)}
     assert "launch_outreach_campaign" in names and "rank_buyers_for_listings" in names
     assert "launch_outreach_campaign" in WRITE_TOOL_NAMES
-    assert "launch_outreach" not in names  # the bundled rank-inside-write tool is gone
+    assert "launch_outreach" not in names  # ranking is a separate read tool, not bundled into the write
 
 
 @pytest.mark.django_db

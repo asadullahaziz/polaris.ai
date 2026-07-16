@@ -1,6 +1,6 @@
 """Idempotently ensure a verified demo login exists (dev/demo only).
 
-Called from the container entrypoint after migrate. Email-login (v2), so the
+Called from the container entrypoint after migrate. Email login, so the
 credential is DEMO_EMAIL / DEMO_PASSWORD.
 """
 

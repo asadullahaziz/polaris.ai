@@ -1,15 +1,14 @@
 """
-chat — free-form human 1:1 messaging (revisions 2026-07-03, supersedes the base
-plan's deal-chat schema).
+Free-form human 1:1 messaging.
 
-**One chat per user-pair.** Two registered users share exactly ONE `Chat`, keyed by a
+One chat per user-pair: two registered users share exactly one `Chat`, keyed by a
 canonical `pair_key` ("minId:maxId"). Listings attach to individual messages
 (`MessageAttachment`, kind=listing) and accrue over the life of the chat — there is
-**no** `subject_listing`, no per-listing thread, and **no `author_side`**: with one
-chat per pair and a single acting `sender`, "side" disappears entirely.
+no per-listing thread and no author "side": with one chat per pair and a single
+acting `sender`, side disappears entirely.
 
-`Message` is the SYSTEM OF RECORD for the transcript (the away-responder, Graph 2/P4,
-rehydrates from here — never from a checkpoint). Every message records `kind`
+`Message` is the system of record for the transcript (the away-responder rehydrates
+from here — never from a checkpoint). Every message records `kind`
 (human/agent/system) and `sender` (the member it speaks for; null for system), which
 is all the sender-based reply-cap invariant needs (`chat/responder_service.py`).
 """
@@ -19,8 +18,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.db import models
 
-# Chat lifecycle (ported from v1 conversation statuses; copilot kinds dropped — the
-# copilot lives in `ai.*`).
+# Chat lifecycle.
 CHAT_STATUSES = [
     ("open", "open"),
     ("paused", "paused"),
@@ -34,10 +32,10 @@ TERMINALS = [
     ("needs_decision", "needs_decision"),
 ]
 
-# WHO produced a message. Replaces v1's author_type; `author_side` is gone.
+# Who produced a message.
 MESSAGE_KINDS = [("human", "human"), ("agent", "agent"), ("system", "system")]
 
-# v1 (qualify-and-hold). propose/counter/accept reserved (stretch negotiation).
+# What an agent message does; drives the UI action chips and deal bookkeeping.
 ACTIONS = [
     ("ask", "ask"),
     ("inform", "inform"),
@@ -51,7 +49,7 @@ ACTIONS = [
 ]
 MSG_STATUSES = [("draft", "draft"), ("sent", "sent")]
 
-# kind=listing is wired now; file/photo reserved for later (revisions §chat schema).
+# kind=listing is wired; file/photo are reserved.
 ATTACHMENT_KINDS = [("listing", "listing"), ("file", "file"), ("photo", "photo")]
 
 
@@ -69,9 +67,9 @@ class Chat(models.Model):
     pair_key = models.TextField()  # canonical "minId:maxId" of the two members
     status = models.TextField(default="open", choices=CHAT_STATUSES)
     terminal = models.TextField(null=True, blank=True, choices=TERMINALS)
-    # Who an escalation waits on (2026-07-08): set by responder_service.escalate; ONLY
-    # this member's next human message reopens the chat — the counterparty pressing
-    # again can't reopen-and-re-escalate forever.
+    # Who an escalation waits on: set by responder_service.escalate. Only this member's
+    # next human message reopens the chat — the counterparty pressing again can't
+    # reopen-and-re-escalate forever.
     escalated_for = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -85,7 +83,7 @@ class Chat(models.Model):
     class Meta:
         db_table = "chat"
         constraints = [
-            # ONE chat per user-pair — a second "Contact seller" reopens the same chat.
+            # One chat per user-pair — a second "Contact seller" reopens the same chat.
             models.UniqueConstraint(fields=["pair_key"], name="uniq_chat_pair"),
         ]
 
@@ -95,7 +93,7 @@ class Chat(models.Model):
 
 class ChatMember(models.Model):
     """Exactly two rows per chat (enforced in the create seam, `chat.services`). Carries
-    per-user read state (absorbs v1 `conversation_read_state`)."""
+    per-user read state."""
 
     pk = models.CompositePrimaryKey("chat_id", "user_id")
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name="members")
@@ -113,10 +111,10 @@ class ChatMember(models.Model):
 
 
 class Message(models.Model):
-    """One turn of the transcript (SYSTEM OF RECORD). `sender` is the member this speaks
-    for: for a `human` message the author; for an `agent` message the PRINCIPAL the away-
-    responder covers (so the sender-based cap resets only on the principal's own human
-    message); null for `system`."""
+    """One turn of the transcript (the system of record). `sender` is the member this
+    speaks for: for a `human` message the author; for an `agent` message the principal
+    the away-responder covers (so the sender-based cap resets only on the principal's
+    own human message); null for `system`."""
 
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name="messages")
 
@@ -139,8 +137,8 @@ class Message(models.Model):
     status = models.TextField(default="sent", choices=MSG_STATUSES)  # draft | sent
     created_at = models.DateTimeField(auto_now_add=True)
     sent_at = models.DateTimeField(null=True, blank=True)  # immutable after (no edit/unsend)
-    # Idempotency (architecture §5): agent autoreply (`autoreply:{chat}:{inbound}`) AND
-    # a human client double-tap (`human:{chat}:{sender}:{uuid}`) share this one index.
+    # Idempotency: agent autoreply (`autoreply:{chat}:{inbound}`) and a human client
+    # double-tap (`human:{chat}:{sender}:{uuid}`) share this one index.
     dedup_key = models.TextField(null=True, blank=True)
 
     class Meta:
@@ -162,9 +160,9 @@ class Message(models.Model):
 
 
 class MessageAttachment(models.Model):
-    """A listing shared inside a message — FIRST-CLASS responder context (Graph 2 reads
-    every attachment to resolve the focal listing), not decoration. `kind=listing` is
-    wired now; file/photo are reserved."""
+    """A listing shared inside a message — first-class responder context (the away-
+    responder reads every attachment to resolve the focal listing), not decoration.
+    `kind=listing` is wired; file/photo are reserved."""
 
     message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="attachments")
     kind = models.TextField(default="listing", choices=ATTACHMENT_KINDS)

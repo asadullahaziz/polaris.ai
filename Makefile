@@ -23,10 +23,10 @@ ps:
 	docker compose ps
 
 # --- backend (run inside the backend container) ---
-test:          ## Run the P0 spike test suite in-container (the gate out of P0)
+test:          ## Run the backend test suite in-container
 	docker compose exec backend sh -c "python manage.py makemigrations --noinput && pytest -q"
 
-seed:          ## Seed the King County demo data (idempotent)
+seed:          ## Seed the Kessler County demo data (idempotent)
 	docker compose exec backend python manage.py seed_kc
 
 seed-reset:    ## Rebuild the seed from scratch (fresh dates)

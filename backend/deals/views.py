@@ -1,8 +1,8 @@
 """
-Deals REST (mini CRM, 2026-07-08) — the pipeline the UI's /deals table reads: one row
-per (listing, buyer) deal the requester is a party to, plus a manual stage override.
-Stage auto-transitions live in `deals/service.py`; this surface only lists and
-overrides. Plain-dict responses, same drf-spectacular posture as `chat/views.py`.
+Deals REST — the pipeline the UI's /deals table reads: one row per (listing, buyer)
+deal the requester is a party to, plus a manual stage override. Stage auto-transitions
+live in `deals/service.py`; this surface only lists and overrides. Plain-dict
+responses, same drf-spectacular posture as `chat/views.py`.
 """
 
 from __future__ import annotations

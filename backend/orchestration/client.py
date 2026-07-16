@@ -1,5 +1,5 @@
 """
-Inngest client singleton (P0.9).
+Inngest client singleton.
 
 Dev mode: `is_production=False` + the `INNGEST_DEV` env var pointing at the
 compose dev server (`http://inngest:8288`) — the SDK both serves in dev mode

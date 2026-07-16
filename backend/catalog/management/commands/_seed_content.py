@@ -7,7 +7,7 @@ never disturbs seed_kc's RNG stream.
 
 Authoring contract (enforced by tests/test_seed.py):
   * Descriptions state only what the Property row supports (condition, sqft, beds,
-    year_built, ...) — the engine owns ALL dollar figures (ARV, rehab, rent), so the
+    year_built, ...) — the engine owns all dollar figures (ARV, rehab, rent), so the
     prose never names one and can never contradict a deterministic diligence answer.
   * agent_instructions / mandate instructions must pass polaris_agent.disclosure
     .style_check verbatim (no em/en dashes, no bot-speak, <500 chars) and contain no

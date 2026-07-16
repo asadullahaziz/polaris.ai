@@ -1,5 +1,5 @@
 """
-Root URL configuration (v2).
+Root URL configuration.
 
   /admin/                 Django admin
   /api/health/            unauthenticated health probe (compose healthcheck)
@@ -7,8 +7,7 @@ Root URL configuration (v2).
   /api/schema[/...]       drf-spectacular OpenAPI schema + Swagger UI
   /api/inngest            Inngest serve mount (functions registered here)
 
-Domain routes (listings/chat/ai/outreach/notifications) are added by their apps
-as those phases land — P0 mounts only auth + platform endpoints.
+Domain routes (listings/chat/ai/deals/notifications) are mounted per app below.
 """
 
 from __future__ import annotations
@@ -37,6 +36,6 @@ urlpatterns = [
         SpectacularSwaggerView.as_view(url_name="schema"),
         name="swagger-ui",
     ),
-    # Inngest serve mount (defaults to path "api/inngest"). Empty registry in P0.
+    # Inngest serve mount (defaults to path "api/inngest").
     inngest.django.serve(inngest_client, inngest_functions),
 ]

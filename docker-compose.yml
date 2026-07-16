@@ -51,7 +51,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
-      start_period: 45s   # first boot installs migrations + runs setup commands
+      start_period: 45s   # first boot generates migrations, migrates, and seeds
 
   # Inngest dev server — registers the app at /api/inngest and calls back to it.
   inngest:

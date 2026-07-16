@@ -46,7 +46,7 @@ class ListingMediaSerializer(serializers.ModelSerializer):
 
 
 class ListingPropertySerializer(serializers.Serializer):
-    """A property as it appears IN a listing: the shared Property + per-listing price."""
+    """A property as it appears in a listing: the shared Property + per-listing price."""
 
     property = PropertySerializer(read_only=True)
     asking_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
@@ -111,7 +111,7 @@ class ListingSummarySerializer(serializers.ModelSerializer):
 class ListingDetailSerializer(serializers.ModelSerializer):
     """The `/listings/[id]` detail: every property + media + the deal mandate.
     Cross-user visible for active listings — the mandate (floor/ceiling/instructions)
-    is seller-PRIVATE and only serialized for the owner; everyone else gets null."""
+    is seller-private and only serialized for the owner; everyone else gets null."""
 
     properties = serializers.SerializerMethodField()
     media = ListingMediaSerializer(many=True, read_only=True)
@@ -241,7 +241,7 @@ class BuyBoxGeoWriteSerializer(serializers.Serializer):
 
 
 class BuyBoxWriteSerializer(serializers.Serializer):
-    """Create/update payload for a buy-box: criteria scalars + **inline deal-settings**
+    """Create/update payload for a buy-box: criteria scalars + inline deal-settings
     (ceiling/must_haves/instructions, upserted onto the box's Mandate) + an optional single
     `geo`. `validated_data` is the flat `fields` dict `catalog.services` consumes — the same
     shape the copilot's buy-box tools pass, so agent == API. All fields optional (one

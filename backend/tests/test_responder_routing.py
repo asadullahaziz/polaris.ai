@@ -1,10 +1,10 @@
 """
-Graph 2 routing + commit dispatch (LLM-free): the widened `_after_triage` assess
+Responder-graph routing + commit dispatch (LLM-free): the `_after_triage` assess
 matrix; `_after_gate` routing `no_reply` to the silent node; the `_after_validate`
 retry-once state machine (style violation → one redraft → escalate); and `_commit`
-forcing `persist_draft` for `accept` REGARDLESS of autonomy (the principal signs) with
-the recommendation in the approval context. Service calls are monkeypatched — no DB,
-no LLM.
+forcing `persist_draft` for `accept` regardless of autonomy (the principal signs)
+with the recommendation in the approval context. Service calls are monkeypatched —
+no DB, no LLM.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ def _run_escalate(state, monkeypatch):
 
 
 def test_escalate_headline_names_counterparty_and_note(monkeypatch):
-    """A decide-stage escalation notifies with WHO reached out + the owner-facing
+    """A decide-stage escalation notifies with who reached out + the owner-facing
     escalation_note; the private_rationale goes to the audit log, not the headline."""
     result, captured = _run_escalate(
         {

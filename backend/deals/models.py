@@ -1,11 +1,11 @@
 """
-deals — the mini CRM (2026-07-08). One `Deal` per (listing, buyer): the pipeline unit
-a real dispo/acquisitions agent tracks. Stages are SYSTEM-DERIVED from message events
+deals — the mini CRM. One `Deal` per (listing, buyer): the pipeline unit a real
+dispo/acquisitions agent tracks. Stages are system-derived from message events
 (deals/service.py seams), forward-only on the automatic path, and always human-
 overridable (`set_stage_manual`). The away-agent reads the focal deal's stage +
-standing offers as PRIVATE context; nothing here crosses the disclosure boundary.
+standing offers as private context; nothing here crosses the disclosure boundary.
 
-Offers: `last_offer_by_*` records AGENT-DISCLOSED offers only (`disclosed_fields.
+Offers: `last_offer_by_*` records agent-disclosed offers only (`disclosed_fields.
 offer_price` at commit/approve). Human free-text offers are not parsed — so against a
 human counterparty the `accept` gate can't fire and the agent escalates with a
 recommendation instead.

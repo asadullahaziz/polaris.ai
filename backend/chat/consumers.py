@@ -1,21 +1,19 @@
 """
-ChatConsumer (architecture §4.2/§9a) — the human 1:1 socket: one per open chat
-(`ws/chat/<id>/`), ported from v1 `ThreadConsumer` and re-keyed off `sender`/`kind`
-(v1's buyer/seller `author_side` is gone).
+ChatConsumer — the human 1:1 socket: one per open chat (`ws/chat/<id>/`).
 
-It carries three things on one socket (§4.2):
-  * **presence** — opening the chat = present; `chat.focus`/`typing` refresh it and emit
-    `chat/focused` (which cancels the away-responder's grace, P4); `chat.blur` and
-    disconnect clear it. Presence is the signal that silences the agent (§9a).
-  * **sending** — `message.send` persists the human message (system of record), broadcasts
-    it live to both parties, and emits `chat/inbound` so the *counterparty's* presence-
-    gated away-responder (Graph 2, P4) can cover if they're away.
-  * **receiving** — human/agent messages land via the `chat_<id>` channel-layer group
-    (the P4 commit gate broadcasts the agent's reply here).
+It carries three things on one socket:
+  * presence — opening the chat = present; `chat.focus`/`typing` refresh it and emit
+    `chat/focused` (which cancels the away-responder's grace); `chat.blur` and
+    disconnect clear it. Presence is the signal that silences the agent.
+  * sending — `message.send` persists the human message (system of record), broadcasts
+    it live to both parties, and emits `chat/inbound` so the counterparty's presence-
+    gated away-responder can cover if they're away.
+  * receiving — human/agent messages land via the `chat_<id>` channel-layer group
+    (the commit gate broadcasts the agent's reply here).
 
 Identity is the session cookie (AuthMiddlewareStack → scope["user"]); non-members are
-rejected in connect(). The `chat/focused`+`chat/inbound` emits are inert seams until P4
-registers the responder handler (best-effort, never fatal to the chat).
+rejected in connect(). The `chat/focused`/`chat/inbound` emits are best-effort, never
+fatal to the chat.
 """
 
 from __future__ import annotations
@@ -57,7 +55,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
         await self._send("chat.ready", {"chat_id": self.chat_id})
-        # Opening the chat IS presence. Set it and let the counterparty know.
+        # Opening the chat is presence. Set it and let the counterparty know.
         await self._become_present()
 
     async def disconnect(self, code):
@@ -73,7 +71,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _become_present(self) -> None:
         await presence.set_present(self.chat_id, self.user.id)
         await self._broadcast_presence(present=True)
-        # Cancel any in-flight away-responder grace for this chat (§9a; inert until P4).
+        # Cancel any in-flight away-responder grace for this chat.
         try:
             await inngest_client.send(
                 inngest.Event(
@@ -153,6 +151,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def chat_presence(self, event):
         d = event.get("data", {})
-        # Only surface the COUNTERPARTY's presence to this client (not our own echo).
+        # Only surface the counterparty's presence to this client (not our own echo).
         if d.get("user_id") != self.user.id:
             await self._send("presence", d)

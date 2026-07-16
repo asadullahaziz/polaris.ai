@@ -1,5 +1,5 @@
 """
-P3 — free-form human 1:1 chat: one chat per pair, listing attachments accruing over the
+Free-form human 1:1 chat: one chat per pair, listing attachments accruing over the
 life of that one chat, the find-or-create entry point, inbox/read-state, member scoping,
 and the engine `_relationships` chat-pair signal. LLM-free (pure ORM/REST).
 """
@@ -52,7 +52,7 @@ def test_one_chat_per_pair_from_either_direction():
     a, b = _user("a@x.com"), _user("b@x.com")
     chat1, created1 = services.get_or_create_chat(a.id, b.id)
     assert created1 is True
-    # From the opposite direction → the SAME chat, not a new one.
+    # From the opposite direction → the same chat, not a new one.
     chat2, created2 = services.get_or_create_chat(b.id, a.id)
     assert created2 is False
     assert chat1.id == chat2.id
@@ -81,7 +81,7 @@ def test_multiple_listing_attachments_accrue_in_one_chat():
 
     msgs = services.list_messages(chat.id, buyer.id)
     attached = [a["listing_id"] for m in msgs for a in m["attachments"]]
-    # Both listings accrue over the life of the ONE chat (not per-listing threads).
+    # Both listings accrue over the life of the one chat (not per-listing threads).
     assert set(attached) == {l1.id, l2.id}
     assert Chat.objects.count() == 1
     # The inline card carries public facts for rendering.
@@ -130,7 +130,7 @@ def test_rest_find_or_create_is_idempotent_and_posts_opener():
     assert r1.status_code == 201, r1.data
     chat_id = r1.data["id"]
 
-    # A second "Contact seller" (even from b's side) reopens the SAME chat.
+    # A second "Contact seller" (even from b's side) reopens the same chat.
     r2 = _client(b).post(CHATS, {"counterparty_id": a.id, "body": "hi back"}, format="json")
     assert r2.status_code == 201
     assert r2.data["id"] == chat_id

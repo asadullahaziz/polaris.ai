@@ -1,5 +1,5 @@
 """
-Chat REST (P3) — the inbox list, one chat's transcript, read-state, the find-or-create
+Chat REST — the inbox list, one chat's transcript, read-state, the find-or-create
 entry point, and draft approval. The live turn rides the WebSocket (ChatConsumer); this
 is the history + list the UI reads, plus the REST paths the entry points (Contact seller
 / Chat from /buyers / outreach) and the human's draft-approval (takeover) use.
@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 
 def _broadcast_and_arm(chat_id: int, message_payload: dict, inbound_message_id: int) -> None:
     """Push a persisted message to the chat's WS group + arm the counterparty's away-
-    responder (P4). Best-effort — the DB write already happened; transport is secondary."""
+    responder. Best-effort — the DB write already happened; transport is secondary."""
     try:
         async_to_sync(get_channel_layer().group_send)(
             f"chat_{chat_id}", {"type": "chat.message", "data": message_payload}

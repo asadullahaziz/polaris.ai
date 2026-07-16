@@ -2,8 +2,8 @@
 catalog REST — property dedup lookup + the user's own listings (multi-property
 create, detail, on-demand valuation/comps, and the per-listing deal mandate).
 
-Views are thin: they validate and delegate to `catalog.services` (the same seam
-the P2 copilot tools call), so the agent and the API stay in lockstep.
+Views are thin: they validate and delegate to `catalog.services` — the same seam
+the copilot tools call, so the agent and the API stay in lockstep.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ class PropertySearchView(APIView):
 
 class BuyerRankView(APIView):
     """GET /api/buyers/rank?address=…&price=…&beds=…&sqft=…&condition=…&property_type=…
-    &limit=… — the `/buyers` ad-hoc matcher (no listing persisted). Delegates to the SAME
+    &limit=… — the `/buyers` ad-hoc matcher (no listing persisted). Delegates to the same
     engine entry point the copilot's `find_buyers` tool uses (agent == API): address→geo
     via the known Property universe (no geocoder), then `rank_buyers_for_attrs`. An
     unresolvable address degrades to `ranked: []` with `resolved: false`, not an error."""
@@ -177,7 +177,7 @@ class ListingViewSet(
 
 class BuyBoxViewSet(viewsets.ViewSet):
     """The user's buy-boxes (criteria + inline deal-settings + geos), for `/settings ›
-    Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the SAME seam the
+    Buy-boxes`. Thin: it validates and delegates to `catalog.services` — the same seam the
     copilot's buy-box tools call, so the agent and the API stay in lockstep. User-scoped:
     a user only ever sees/edits their own boxes (services filters by `buyer_id`; a foreign
     id returns an error dict → 404)."""

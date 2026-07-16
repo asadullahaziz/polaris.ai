@@ -1,9 +1,8 @@
 """
-P6 seam adds — the three small REST endpoints the ShadCN frontend needs that P0–P5
-didn't expose: the `/buyers` ad-hoc rank endpoint (agent == API for `find_buyers`),
-`agent_reply_cap` on the /me profile surface (edited in `/settings › AI`), and
-`discard-draft` (the third leg of the chat draft-approval UI: approve / edit-and-send /
-discard). LLM-free.
+Small REST seams for the frontend: the `/buyers` ad-hoc rank endpoint
+(agent == API for `find_buyers`), `agent_reply_cap` on the /me profile surface
+(edited in `/settings › AI`), and `discard-draft` (the third leg of the chat
+draft-approval UI: approve / edit-and-send / discard). LLM-free.
 """
 
 from __future__ import annotations
@@ -104,7 +103,7 @@ def test_agent_reply_cap_round_trips_through_me():
     u = _user("cap@x.com")
     c = _client(u)
 
-    assert c.get(ME).data["profile"]["agent_reply_cap"] == 6  # model default (2026-07-08)
+    assert c.get(ME).data["profile"]["agent_reply_cap"] == 6  # model default
 
     patched = c.patch(ME, {"agent_reply_cap": 5}, format="json")
     assert patched.status_code == 200
