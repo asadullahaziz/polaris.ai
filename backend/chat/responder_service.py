@@ -49,12 +49,14 @@ def dedup_key(chat_id: int, inbound_message_id: int) -> str:
 
 
 def _default_present(chat_id: int, user_id: int | None) -> bool:
-    """Redis-backed presence check (lazy import so the service stays testable offline)."""
+    """Redis-backed stand-down check: is the human's reply box focused (composing)? Merely
+    having the chat open no longer counts — only focusing the box silences the agent. Lazy
+    import so the service stays testable offline."""
     if user_id is None:
         return False
-    from chat.presence import is_present_sync
+    from chat.presence import is_composing_sync
 
-    return is_present_sync(chat_id, user_id)
+    return is_composing_sync(chat_id, user_id)
 
 
 def _principal_cap(principal_id: int) -> int:

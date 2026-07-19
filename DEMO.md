@@ -65,10 +65,11 @@ four mandates → four verdicts, computed by the deterministic engine, not the L
    (`docker compose restart backend`).
 3. **Browser profiles**: A = Walt, B = Erin, C = Jake (separate profiles or incognito
    windows so sessions don't collide).
-4. **Presence is per-chat**: an away-agent stands down only for a thread its principal
-   has OPEN. So: keep buyer windows off their chat threads until their beat, and as
-   Walt watch from **/deals** or the chat *list* — opening a specific thread is the
-   human-takeover mechanic (scene 8), use it deliberately, not accidentally.
+4. **Presence is per-chat**: an away-agent stands down only for a thread whose reply box
+   its principal has FOCUSED (clicked into) — merely having the thread open is fine, the
+   agent still covers. So: keep buyers out of the reply box on their threads until their
+   beat, and as Walt watch from **/deals** or the chat *list* — clicking into a thread's
+   reply box is the human-takeover mechanic (scene 8), use it deliberately, not accidentally.
 5. **Dry-run the divergence once off-camera**: run scene 4, watch the four replies
    land, then `make seed-reset` to restore a clean world before recording.
 
@@ -146,10 +147,10 @@ Then the seller-side version: from Jake's window ask
 escalation lands on **Walt's** bell. *Unanswerable ≠ improvised.*
 
 ### Scene 8 — Human takeover (Walt)
-Open the escalated thread as Walt (presence now silences his agent for this chat)
-and type a human answer ("roof was redone in 2019, no liens, clean title").
-*Narrate: opening the thread IS the takeover — no mode switch; the agent resumes
-cover when he leaves.*
+Open the escalated thread as Walt and **click into the reply box** (focusing it now
+silences his agent for this chat); type a human answer ("roof was redone in 2019, no
+liens, clean title"). *Narrate: clicking into the reply box IS the takeover — no mode
+switch; the agent resumes cover when he clicks away or leaves.*
 
 ### Scene 9 — Governance: the persona is inspectable (Erin)
 **Route:** `/settings` as Erin.

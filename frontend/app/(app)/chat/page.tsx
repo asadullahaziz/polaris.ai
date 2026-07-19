@@ -84,6 +84,7 @@ function ChatPageInner() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const lastTypingRef = useRef(0);
+  const composeBeatRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const active = chats.find((c) => c.id === activeId) || null;
@@ -148,6 +149,7 @@ function ChatPageInner() {
     return () => {
       stopped = true;
       if (retry) clearTimeout(retry);
+      if (composeBeatRef.current) clearInterval(composeBeatRef.current);
       document.removeEventListener("visibilitychange", onVis);
       wsRef.current?.close();
       setConnected(false);
@@ -181,6 +183,24 @@ function ChatPageInner() {
       lastTypingRef.current = now;
       ws.send(JSON.stringify({ type: "typing", data: {} }));
     }
+  }
+
+  // Focusing the reply box = "I'm taking this over" → pause your away-agent. A heartbeat
+  // (< the 120s presence TTL) holds the pause while the box stays focused, even idle;
+  // blurring lets the agent cover again.
+  function sendCompose(type: "compose.focus" | "compose.blur") {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, data: {} }));
+  }
+  function onComposeFocus() {
+    sendCompose("compose.focus");
+    if (composeBeatRef.current) clearInterval(composeBeatRef.current);
+    composeBeatRef.current = setInterval(() => sendCompose("compose.focus"), 45000);
+  }
+  function onComposeBlur() {
+    if (composeBeatRef.current) clearInterval(composeBeatRef.current);
+    composeBeatRef.current = undefined;
+    sendCompose("compose.blur");
   }
 
   async function approve(messageId: number) {
@@ -280,6 +300,8 @@ function ChatPageInner() {
               input={input}
               onType={onType}
               onSend={send}
+              onFocus={onComposeFocus}
+              onBlur={onComposeBlur}
               connected={connected}
               attachIds={attachIds}
               setAttachIds={setAttachIds}
@@ -485,6 +507,8 @@ function Composer({
   input,
   onType,
   onSend,
+  onFocus,
+  onBlur,
   connected,
   attachIds,
   setAttachIds,
@@ -492,6 +516,8 @@ function Composer({
   input: string;
   onType: (v: string) => void;
   onSend: () => void;
+  onFocus: () => void;
+  onBlur: () => void;
   connected: boolean;
   attachIds: number[];
   setAttachIds: (ids: number[]) => void;
@@ -557,6 +583,8 @@ function Composer({
           <Textarea
             value={input}
             onChange={(e) => onType(e.target.value)}
+            onFocus={onFocus}
+            onBlur={onBlur}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -564,7 +592,7 @@ function Composer({
               }
             }}
             rows={2}
-            placeholder="Reply… (opening this chat pauses your Polaris — you've taken over)"
+            placeholder="Reply… (click in here to take over — your Polaris pauses while you write)"
             className="flex-1 resize-none"
           />
           <Button onClick={onSend} disabled={!connected} className="h-auto">

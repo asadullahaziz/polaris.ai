@@ -2,9 +2,12 @@
 ChatConsumer — the human 1:1 socket: one per open chat (`ws/chat/<id>/`).
 
 It carries three things on one socket:
-  * presence — opening the chat = present; `chat.focus`/`typing` refresh it and emit
-    `chat/focused` (which cancels the away-responder's grace); `chat.blur` and
-    disconnect clear it. Presence is the signal that silences the agent.
+  * presence — two decoupled signals. `presence` ("chat open"): set on connect + tab
+    `chat.focus`, cleared on `chat.blur`/disconnect → drives the counterparty's online dot.
+    `composing` ("reply box focused"): set on `compose.focus`/`typing` (client heartbeats
+    while focused), cleared on `compose.blur`/disconnect → this is the signal that silences
+    the away-agent, and its set emits `chat/focused` (which cancels the responder's grace).
+    Reading a chat keeps you online but leaves the agent covering until you focus the box.
   * sending — `message.send` persists the human message (system of record), broadcasts
     it live to both parties, and emits `chat/inbound` so the counterparty's presence-
     gated away-responder can cover if they're away.
@@ -55,13 +58,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
         await self._send("chat.ready", {"chat_id": self.chat_id})
-        # Opening the chat is presence. Set it and let the counterparty know.
+        # Opening the chat = "online" to the counterparty. It does NOT silence the agent —
+        # that waits for the reply box to be focused (composing).
         await self._become_present()
 
     async def disconnect(self, code):
         if getattr(self, "group_name", None) is None:
             return
         await presence.clear_present(self.chat_id, self.user.id)
+        await presence.clear_composing(self.chat_id, self.user.id)
         await self._broadcast_presence(present=False)
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
@@ -69,9 +74,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({"type": type_, "data": data}))
 
     async def _become_present(self) -> None:
+        """Chat open + visible → 'online' to the counterparty. Does not touch the agent."""
         await presence.set_present(self.chat_id, self.user.id)
         await self._broadcast_presence(present=True)
-        # Cancel any in-flight away-responder grace for this chat.
+
+    async def _become_composing(self) -> None:
+        """Reply box focused → the human is taking over: silence the away-agent and cancel
+        any in-flight grace for this chat. Private to the gate — no presence broadcast."""
+        await presence.set_composing(self.chat_id, self.user.id)
         try:
             await inngest_client.send(
                 inngest.Event(
@@ -106,11 +116,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
         mtype = payload.get("type")
         data = payload.get("data") or {}
 
-        if mtype in ("chat.focus", "typing"):
+        if mtype == "chat.focus":  # tab visible → online dot only
             await self._become_present()
-        elif mtype == "chat.blur":
+        elif mtype == "chat.blur":  # tab hidden → offline dot
             await presence.clear_present(self.chat_id, self.user.id)
             await self._broadcast_presence(present=False)
+        elif mtype == "compose.focus":  # reply box focused → silence the agent
+            await self._become_composing()
+        elif mtype == "compose.blur":  # reply box blurred → let the agent cover again
+            await presence.clear_composing(self.chat_id, self.user.id)
+        elif mtype == "typing":  # typing ⇒ box focused (composing) and clearly present
+            await self._become_composing()
+            await self._become_present()
         elif mtype == "message.send":
             await self._handle_send(data)
 
