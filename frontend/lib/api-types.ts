@@ -663,6 +663,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/listings/{id}/properties/{property_id}/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * @description PATCH /api/listings/{id}/properties/{property_id}/ — set the seller's
+         *     per-listing current-state overrides for one property (post-reno condition, a
+         *     correction, an addition). Never mutates the shared Property. Owner-scoped via
+         *     get_object(); delegates to the same services seam the copilot tool uses.
+         */
+        patch: operations["listings_properties_partial_update"];
+        trace?: never;
+    };
     "/api/listings/{id}/valuation/": {
         parameters: {
             query?: never;
@@ -670,7 +692,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description On-demand market value + comps for the listing (arv=1 for after-repair). */
+        /**
+         * @description On-demand market value + comps for the listing (arv=1 for after-repair), valued
+         *     on the effective subject (base ⊕ seller overrides). `current_value` is the
+         *     condition-aware as-is number that moves with a renovation.
+         */
         get: operations["listings_valuation_retrieve"];
         put?: never;
         post?: never;
@@ -900,7 +926,7 @@ export interface components {
             readonly created_at: string;
             /** Format: date-time */
             readonly updated_at: string;
-            readonly properties: string;
+            readonly properties: components["schemas"]["ListingProperty"][];
             readonly media: components["schemas"]["ListingMedia"][];
             readonly mandate: string;
             readonly seller: string;
@@ -910,6 +936,45 @@ export interface components {
             readonly kind: components["schemas"]["KindEnum"];
             readonly url: string;
             readonly sort_order: number;
+        };
+        /**
+         * @description A property as it appears in a listing: the immutable shared Property (comp basis),
+         *     the per-listing price, plus the seller's current-state overrides. `overrides` is the
+         *     raw restated values (kept separate from `property` so base vs override never blur),
+         *     `effective` is base ⊕ override (what the engine values), and `seller_stated_fields`
+         *     flags which attrs are seller-restated (drives the "seller-stated" UI badge).
+         */
+        ListingProperty: {
+            readonly property: components["schemas"]["Property"];
+            /** Format: decimal */
+            asking_price: string | null;
+            sort_order: number;
+            readonly overrides: {
+                [key: string]: unknown;
+            };
+            readonly effective: {
+                [key: string]: unknown;
+            };
+            readonly seller_stated_fields: unknown[];
+        };
+        /**
+         * @description The seller's per-listing current-state overrides for one property (post-reno
+         *     condition, a county-record correction, an addition). All optional (partial edits);
+         *     an explicit ``null`` clears an override, a value sets it. Validation is load-bearing
+         *     here — unlike scalar listing edits, these figures feed the deal math, so an
+         *     out-of-range rating would silently corrupt valuation. Never touches the base Property.
+         *     `sqft` is intentionally unbounded relative to base: a rebuild/addition legitimately
+         *     changes it, and the counterparty-facing figures are caveated seller-stated.
+         */
+        ListingPropertyOverride: {
+            condition?: number | null;
+            grade?: number | null;
+            sqft?: number | null;
+            beds?: number | null;
+            /** Format: decimal */
+            baths?: string | null;
+            year_built?: number | null;
+            yr_renovated?: number | null;
         };
         /**
          * @description The `/listings` card view: headline fields + primary property + cover photo.
@@ -1042,6 +1107,25 @@ export interface components {
             token: string;
             new_password: string;
         };
+        /**
+         * @description The seller's per-listing current-state overrides for one property (post-reno
+         *     condition, a county-record correction, an addition). All optional (partial edits);
+         *     an explicit ``null`` clears an override, a value sets it. Validation is load-bearing
+         *     here — unlike scalar listing edits, these figures feed the deal math, so an
+         *     out-of-range rating would silently corrupt valuation. Never touches the base Property.
+         *     `sqft` is intentionally unbounded relative to base: a rebuild/addition legitimately
+         *     changes it, and the counterparty-facing figures are caveated seller-stated.
+         */
+        PatchedListingPropertyOverride: {
+            condition?: number | null;
+            grade?: number | null;
+            sqft?: number | null;
+            beds?: number | null;
+            /** Format: decimal */
+            baths?: string | null;
+            year_built?: number | null;
+            yr_renovated?: number | null;
+        };
         PatchedListingUpdate: {
             title?: string;
             description?: string;
@@ -1083,7 +1167,26 @@ export interface components {
             agent_reply_cap?: number;
             agent_instructions?: string;
         };
-        /** @description One entry in a listing's property list: a match (`property_id`) OR new fields. */
+        /** @description Read-only property view (matched properties are shown, never edited here). */
+        Property: {
+            readonly id: number;
+            readonly address_raw: string;
+            readonly property_type: string | null;
+            readonly beds: number | null;
+            /** Format: decimal */
+            readonly baths: string | null;
+            readonly sqft: number | null;
+            readonly lot_size_sqft: number | null;
+            readonly year_built: number | null;
+            readonly condition: number | null;
+            readonly grade: number | null;
+            readonly waterfront: boolean | null;
+        };
+        /**
+         * @description One entry in a listing's property list: a match (`property_id`) OR new fields,
+         *     plus optional per-listing current-state `overrides` (kept distinct from the
+         *     create-a-new-Property fields).
+         */
         PropertyItem: {
             property_id?: number | null;
             address?: string;
@@ -1100,6 +1203,7 @@ export interface components {
             /** Format: decimal */
             asking_price?: string | null;
             sort_order?: number;
+            overrides?: components["schemas"]["ListingPropertyOverride"];
         };
         Register: {
             /** Format: email */
@@ -2200,6 +2304,34 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listings_properties_partial_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                property_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PatchedListingPropertyOverride"];
+                "application/x-www-form-urlencoded": components["schemas"]["PatchedListingPropertyOverride"];
+                "multipart/form-data": components["schemas"]["PatchedListingPropertyOverride"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListingDetail"];
+                };
             };
         };
     };

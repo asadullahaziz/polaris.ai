@@ -221,6 +221,30 @@ export type MandateShape =
       instructions: string;
     };
 
+// Per-listing current-state overrides: the seller's restated attributes for THIS
+// listing (post-reno condition, a correction, an addition). A value sets an override,
+// null clears it. Never mutates the shared Property (the market comp basis).
+export type PropertyOverrides = {
+  condition?: number | null;
+  grade?: number | null;
+  sqft?: number | null;
+  beds?: number | null;
+  baths?: number | null;
+  year_built?: number | null;
+  yr_renovated?: number | null;
+};
+
+// The effective current-state = base Property ⊕ overrides (what the engine values).
+export type EffectiveAttrs = {
+  beds: number | null;
+  baths: number | null;
+  sqft: number | null;
+  grade: number | null;
+  condition: number | null;
+  year_built: number | null;
+  yr_renovated: number | null;
+};
+
 export type ListingDetail = {
   id: number;
   title: string;
@@ -234,6 +258,11 @@ export type ListingDetail = {
     property: Property;
     asking_price: string | number | null;
     sort_order: number;
+    // raw overrides set on this listing (absent keys inherit the base Property):
+    overrides: PropertyOverrides;
+    effective: EffectiveAttrs;
+    // which current-state attrs the seller restated (drives the "seller-stated" badge):
+    seller_stated_fields: string[];
   }[];
   media: { id: number; kind: string; url: string; sort_order: number }[];
   // Seller-private: null on other sellers' listings.
@@ -255,6 +284,8 @@ export type PropertyItemInput = {
   waterfront?: boolean;
   asking_price?: number;
   sort_order?: number;
+  // current-state overrides when attaching an existing (matched) property:
+  overrides?: PropertyOverrides;
 };
 
 export type MandateInput = {
@@ -301,6 +332,18 @@ export const updateListing = (
   apiFetch(`/api/listings/${id}/`, {
     method: "PATCH",
     body: JSON.stringify(body),
+  }).then((r) => json<ListingDetail>(r));
+
+// Set the seller's per-listing current-state overrides for one property (post-reno
+// condition, a correction, an addition). Never touches the shared Property.
+export const updateListingProperty = (
+  listingId: number,
+  propertyId: number,
+  overrides: PropertyOverrides,
+) =>
+  apiFetch(`/api/listings/${listingId}/properties/${propertyId}/`, {
+    method: "PATCH",
+    body: JSON.stringify(overrides),
   }).then((r) => json<ListingDetail>(r));
 
 // ---- Photo upload (presigned direct-to-storage) -------------------------------
@@ -366,6 +409,20 @@ export type Comp = {
   distance_mi: number | null;
 };
 
+// Condition-aware as-is value = ARV − estimated repair cost. Rises as condition
+// improves (a renovation), so it moves with per-listing overrides. Seller-facing only.
+export type CurrentValue = {
+  low: number | null;
+  point: number | null;
+  high: number | null;
+  arv: number | null;
+  est_rehab: number | null;
+  condition: number | null;
+  floored: boolean;
+  seller_stated: boolean;
+  seller_stated_fields: string[];
+};
+
 export type Valuation = {
   low: number | null;
   point: number | null;
@@ -376,11 +433,13 @@ export type Valuation = {
     relaxed: string;
     arv: boolean;
     met_min_n: boolean;
+    seller_stated?: boolean;
     ppsf_low?: number;
     ppsf_median?: number;
     ppsf_high?: number;
   };
   comps: Comp[];
+  current_value: CurrentValue;
 };
 
 export const getValuation = (id: number, arv = false) =>

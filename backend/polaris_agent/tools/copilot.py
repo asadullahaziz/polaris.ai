@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 WRITE_TOOL_NAMES = {
     "create_listing",
     "update_listing",
+    "update_listing_property",
     "set_mandate",
     "create_buy_box",
     "update_buy_box",
@@ -165,7 +166,9 @@ def copilot_tools(principal_id: int) -> list:
         """Estimate a value range from comparable sales for any listing visible to the
         user (their own, or another seller's active one — market data, not private).
         Set after_repair=True for ARV (comped against good-condition sales). Returns
-        low/point/high, the $/sqft basis, and the comps used."""
+        low/point/high, the $/sqft basis, the comps used, and `current_value` — the
+        condition-aware as-is estimate (ARV minus estimated repair cost) that reflects the
+        property's current/renovated condition, so it rises as the condition improves."""
         res = await dal.estimate_for_listing(listing_id, principal_id, after_repair)
         if "comps" in res:
             res["comps"] = res["comps"][:6]  # trim for the narration
@@ -359,6 +362,58 @@ def copilot_tools(principal_id: int) -> list:
         ):
             return {"status": "cancelled", "action": "set_mandate"}
         return await dal.set_mandate_for_listing(listing_id, principal_id, fields)
+
+    @tool
+    async def update_listing_property(
+        listing_id: int,
+        property_id: int,
+        condition: int | None = None,
+        grade: int | None = None,
+        sqft: int | None = None,
+        beds: int | None = None,
+        baths: float | None = None,
+        year_built: int | None = None,
+        yr_renovated: int | None = None,
+    ) -> dict:
+        """Update the CURRENT STATE of a property on one of the user's OWN listings — its
+        condition/rating (1-5), grade, size (sqft), beds, baths, year built, or renovation
+        year — for example after a renovation or to correct a stale record. These are
+        per-listing overrides: they feed valuation and buyer matching WITHOUT changing the
+        shared property record (which stays the market comp basis), and any figure derived
+        from them is disclosed to counterparties as seller-stated and unverified. Use this
+        when the user says they renovated, rebuilt, or that a listed attribute is wrong.
+        Requires confirmation before saving."""
+        fields = {
+            k: v
+            for k, v in {
+                "condition": condition,
+                "grade": grade,
+                "sqft": sqft,
+                "beds": beds,
+                "baths": baths,
+                "year_built": year_built,
+                "yr_renovated": yr_renovated,
+            }.items()
+            if v is not None
+        }
+        if not fields:
+            return {
+                "status": "noop",
+                "action": "update_listing_property",
+                "detail": "no attributes provided to update",
+            }
+        summary = "Update current-state for property #{p} on listing #{lid}: {d}".format(
+            p=property_id,
+            lid=listing_id,
+            d=", ".join(f"{k}→{v}" for k, v in fields.items()),
+        )
+        if not _confirm(
+            "update_listing_property",
+            summary,
+            {"listing_id": listing_id, "property_id": property_id, "fields": fields},
+        ):
+            return {"status": "cancelled", "action": "update_listing_property"}
+        return await dal.update_listing_property(listing_id, principal_id, property_id, fields)
 
     @tool
     async def create_buy_box(
@@ -671,6 +726,7 @@ def copilot_tools(principal_id: int) -> list:
         # writes (confirm-gated)
         create_listing,
         update_listing,
+        update_listing_property,
         set_mandate,
         create_buy_box,
         update_buy_box,

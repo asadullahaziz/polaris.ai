@@ -18,6 +18,7 @@ from django.utils import timezone
 from catalog.models import Listing, ListingProperty, Property, Sale
 from matching.engine import (
     assess_deal,
+    estimate_current_value,
     estimate_value,
     get_comps,
     rank_buyers,
@@ -43,6 +44,32 @@ def _mk(lon, lat, *, beds=3, sqft=2000, grade=7, condition=3, waterfront=False, 
         last_sale_price=Decimal(price),
         last_sale_date=timezone.now().date() - dt.timedelta(days=30),
     )
+
+
+# --- effective_attrs overlay (base ⊕ per-listing override) --------------------
+@pytest.mark.django_db
+def test_effective_attrs_overlays_without_mutating_base():
+    subj = _mk(-122.330, 47.600, beds=3, sqft=2000, grade=7, condition=2, price="500000", apn="ov")
+    seller = User.objects.create_user(email="ov_seller@x.com", password="pw-12345678")
+    listing = Listing.objects.create(seller=seller, asking_price=Decimal("450000"), status="active")
+    lp = ListingProperty.objects.create(
+        listing=listing,
+        property=subj,
+        condition=5,  # renovated
+        beds=0,  # a legit 0 override must win over base 3
+        # sqft/grade left NULL → inherit base
+    )
+
+    eff = lp.effective_attrs()
+    assert eff["condition"] == 5  # override wins
+    assert eff["beds"] == 0  # 0 is a real override, not "unset"
+    assert eff["sqft"] == 2000 and eff["grade"] == 7  # NULL inherits base
+    assert eff["pk"] == subj.pk  # self-exclusion key present
+    assert eff["geom"] is not None  # geo never overridable, from base
+    assert set(eff["seller_stated_fields"]) == {"condition", "beds"}
+
+    subj.refresh_from_db()  # base Property untouched by the overlay
+    assert subj.condition == 2 and subj.beds == 3
 
 
 # --- comps / valuation --------------------------------------------------------
@@ -131,6 +158,84 @@ def test_assess_deal_holds_when_unpriceable():
     ListingProperty.objects.create(listing=listing, property=subj, asking_price=Decimal("150000"))
     res = assess_deal(listing.id, strategy="fix_flip")
     assert res["verdict"] == "hold"
+
+
+# --- per-listing overrides feed the engine ------------------------------------
+def _subj_dict(p, **over):
+    """An effective-subject dict for the dict-taking engine entry points."""
+    d = {
+        "pk": p.pk,
+        "geom": p.geom,
+        "beds": p.beds,
+        "sqft": p.sqft,
+        "grade": p.grade,
+        "waterfront": p.waterfront,
+        "condition": p.condition,
+    }
+    d.update(over)
+    return d
+
+
+@pytest.mark.django_db
+def test_override_condition_widens_assess_spread_and_flags_seller_stated():
+    """A seller-stated renovated condition drops est_rehab → wider spread, and the deal
+    math is flagged seller_stated. The shared Property row stays untouched."""
+    listing = _listing_with_comps("400000", condition=2)  # base needs rehab
+    lp = ListingProperty.objects.get(listing_id=listing.id)
+
+    before = assess_deal(listing.id, strategy="fix_flip")
+    assert before["seller_stated"] is False
+    assert before["est_rehab"] > 0  # condition 2 → real rehab
+
+    lp.condition = 5  # seller: renovated, turnkey
+    lp.save(update_fields=["condition"])
+    after = assess_deal(listing.id, strategy="fix_flip")
+    assert after["est_rehab"] == 0  # condition 5 → no rehab
+    assert after["spread"] > before["spread"]  # work already done → bigger spread
+    assert after["seller_stated"] is True
+    assert after["seller_stated_fields"] == ["condition"]
+    assert after["basis"]["seller_stated"] is True  # provenance rides the valuation too
+
+    lp.property.refresh_from_db()  # base comp basis unchanged
+    assert lp.property.condition == 2
+
+
+@pytest.mark.django_db
+def test_estimate_current_value_tracks_condition_and_caps_at_arv():
+    subj = _mk(-122.330, 47.600, sqft=2000, condition=2, price="500000", apn="cv")
+    for i in range(8):  # turnkey comps → ARV resolves
+        _mk(
+            -122.330 + 0.002 * i,
+            47.601,
+            sqft=2000,
+            condition=4,
+            price=str(490000 + 5000 * i),
+            apn=f"cvc{i}",
+        )
+
+    cv_gut = estimate_current_value(_subj_dict(subj, condition=2))
+    cv_turnkey = estimate_current_value(_subj_dict(subj, condition=5))
+
+    assert cv_gut["arv"] == cv_turnkey["arv"]  # ARV is condition-blind (the ceiling)
+    assert cv_turnkey["point"] == cv_turnkey["arv"]  # turnkey → current == ARV
+    assert cv_gut["point"] < cv_turnkey["point"]  # reno lifts the number
+    assert cv_gut["est_rehab"] > 0 and cv_turnkey["est_rehab"] == 0
+
+
+@pytest.mark.django_db
+def test_estimate_current_value_floors_negative_and_handles_unknown():
+    subj = _mk(-122.330, 47.600, sqft=2000, condition=1, price="100000", apn="cheap")
+    for i in range(8):  # ppsf ~ $50, below the condition-1 rehab psf ($60)
+        _mk(-122.330 + 0.002 * i, 47.601, sqft=2000, condition=4, price="100000", apn=f"chc{i}")
+
+    floored = estimate_current_value(_subj_dict(subj, condition=1))
+    assert floored["point"] == 0 and floored["floored"] is True
+
+    # Unknown condition → blended as-is comp value, no default-rehab haircut.
+    unknown = estimate_current_value(_subj_dict(subj, condition=None))
+    asis = estimate_value(_subj_dict(subj, condition=None), arv=False)
+    assert unknown["point"] == asis["point"]
+    assert unknown["condition"] is None and unknown["est_rehab"] is None
 
 
 # --- rank_buyers --------------------------------------------------------------

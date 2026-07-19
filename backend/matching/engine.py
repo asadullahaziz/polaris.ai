@@ -167,6 +167,12 @@ def estimate_value(subject, *, arv: bool = False, min_n: int = 5) -> dict:
         "arv": arv,
         "met_min_n": comp_res["met_min_n"],
     }
+    # Provenance: when the subject carries seller-restated attrs, the figure is derived
+    # from them — the disclosure layer caveats it before it reaches a counterparty.
+    ss = subject.get("seller_stated_fields") if isinstance(subject, dict) else None
+    basis["seller_stated"] = bool(ss)
+    if ss:
+        basis["seller_stated_fields"] = list(ss)
     if not ppsfs or not a["sqft"]:
         return {
             "low": None,
@@ -187,6 +193,64 @@ def estimate_value(subject, *, arv: bool = False, min_n: int = 5) -> dict:
         "high": round(hi * sqft),
         "basis": basis,
         "comps": comp_res["comps"],
+    }
+
+
+def estimate_current_value(subject, *, min_n: int = 5) -> dict:
+    """Condition-aware "as-is" current value = ARV − est_rehab(condition, sqft).
+
+    ARV is the after-repair ceiling and is (correctly) condition-blind; this is the number
+    that MOVES with a renovation — higher condition → lower rehab → value climbs toward the
+    ceiling; a gut job sits well below it. Seller-facing only (never a counterparty figure).
+
+    Guards: floor each of low/point/high at 0; when ARV or size is missing → None (no bogus
+    0); when condition is unknown, fall back to the blended as-is comp value rather than
+    applying the default-rehab haircut (a blank rating shouldn't tank the number)."""
+    a = _attrs(subject)
+    ss = subject.get("seller_stated_fields") if isinstance(subject, dict) else None
+    arv_res = estimate_value(subject, arv=True, min_n=min_n)
+    arv_point = arv_res["point"]
+    condition = a.get("condition")
+    est_rehab = _est_rehab(condition, a.get("sqft"))
+
+    out = {
+        "arv": arv_point,
+        "est_rehab": est_rehab,
+        "condition": condition,
+        "seller_stated": bool(ss),
+        "seller_stated_fields": list(ss) if ss else [],
+        "basis": arv_res["basis"],
+    }
+
+    # Unknown condition → don't guess a rehab haircut; use the blended as-is comp value.
+    if condition is None:
+        asis = estimate_value(subject, arv=False, min_n=min_n)
+        return {
+            **out,
+            "low": asis["low"],
+            "point": asis["point"],
+            "high": asis["high"],
+            "est_rehab": None,
+            "floored": False,
+        }
+
+    # Can't price the ARV or the rehab → no fabricated number.
+    if arv_point is None or est_rehab is None:
+        return {**out, "low": None, "point": None, "high": None, "floored": False}
+
+    def _asis(v):
+        return None if v is None else max(0, v - est_rehab)
+
+    floored = any(
+        v is not None and (v - est_rehab) < 0
+        for v in (arv_res["low"], arv_res["point"], arv_res["high"])
+    )
+    return {
+        **out,
+        "low": _asis(arv_res["low"]),
+        "point": _asis(arv_res["point"]),
+        "high": _asis(arv_res["high"]),
+        "floored": floored,
     }
 
 
@@ -327,6 +391,7 @@ def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> 
             "ranked": [],
             "note": "listing has no geolocated property",
         }
+    eff = lp.effective_attrs()  # base ⊕ seller's per-listing current-state overrides
 
     price = (
         float(listing.asking_price)
@@ -334,13 +399,13 @@ def rank_buyers(listing_id: int, *, limit: int = 10, radius_mi: float = 5.0) -> 
         else (float(prop.last_sale_price) if prop.last_sale_price is not None else None)
     )
     result = _rank_pool(
-        geom=prop.geom,
+        geom=eff["geom"],
         price=price,
         attrs={
-            "condition": prop.condition,
-            "beds": prop.beds,
-            "sqft": prop.sqft,
-            "property_type": prop.property_type,
+            "condition": eff["condition"],
+            "beds": eff["beds"],
+            "sqft": eff["sqft"],
+            "property_type": eff["property_type"],
         },
         seller_id=listing.seller_id,
         limit=limit,
@@ -633,16 +698,17 @@ def assess_deal(listing_id: int, *, strategy: str | None = None, min_n: int = 5)
     prop = lp.property if lp else None
     if prop is None:
         return {"verdict": "hold", "error": "listing has no property"}
+    eff = lp.effective_attrs()  # base ⊕ seller's per-listing current-state overrides
 
     asking = (
         float(listing.asking_price)
         if listing.asking_price is not None
         else (float(lp.asking_price) if lp.asking_price is not None else None)
     )
-    arv_res = estimate_value(prop, arv=True, min_n=min_n)
+    arv_res = estimate_value(eff, arv=True, min_n=min_n)
     arv = arv_res["point"]
     threshold = _MARGIN_THRESHOLD_BY_STRATEGY.get(strategy, _DEFAULT_MARGIN_THRESHOLD)
-    est_rehab = _est_rehab(prop.condition, prop.sqft)
+    est_rehab = _est_rehab(eff["condition"], eff["sqft"])
 
     base = {
         "arv": arv,
@@ -652,6 +718,9 @@ def assess_deal(listing_id: int, *, strategy: str | None = None, min_n: int = 5)
         "strategy": strategy,
         "threshold": threshold,
         "basis": arv_res["basis"],
+        # provenance for the disclosure layer (buyer-side: stays private to Stage 1):
+        "seller_stated": bool(eff["seller_stated_fields"]),
+        "seller_stated_fields": eff["seller_stated_fields"],
     }
 
     # Can't price the deal → hold and chase info, don't guess a decline.
@@ -688,7 +757,7 @@ def assess_deal(listing_id: int, *, strategy: str | None = None, min_n: int = 5)
 
     rationale = (
         f"ARV ~${arv:,.0f}, asking ${asking:,.0f}, est. rehab ${est_rehab:,.0f} "
-        f"(condition {prop.condition if prop.condition is not None else '?'}), "
+        f"(condition {eff['condition'] if eff['condition'] is not None else '?'}), "
         f"${WHOLESALE_FEE:,.0f} fee → spread ${spread:,.0f} ({margin_pct:.0%} margin) "
         f"vs {threshold:.0%} target"
         + (f" for {strategy.replace('_', ' ')}" if strategy else "")
