@@ -6,8 +6,8 @@ Away-responder Inngest handler.
 a chat). It:
 
   1. Debounces with the presence grace: `step.wait_for_event("chat/focused", …)`
-     matched to this chat, timeout = the grace window. If the covered human shows up
-     (focus/typing) inside the window → stand down.
+     matched to this chat, timeout = the grace window. If the covered human focuses the
+     reply box (compose.focus/typing) inside the window → stand down.
   2. Loads the principal-centric plan and, if a reply is warranted, runs the away
      assistant's responder turn (presence + cap re-checked; the DB commit gate
      re-checks both atomically).
@@ -91,9 +91,10 @@ async def thread_inbound(ctx: inngest.Context) -> dict:
     chat_id = int(ctx.event.data["chat_id"])
     inbound_id = int(ctx.event.data["inbound_message_id"])
 
-    # (1) Presence grace / debounce. Any chat.focus / typing on THIS chat → stand down.
-    # Inngest rejects sub-second waits, so a grace of 0 (a valid demo setting) means
-    # "no debounce" — skip the wait; the presence re-check below still guards.
+    # (1) Presence grace / debounce. Focusing the reply box (compose.focus / typing) on
+    # THIS chat emits chat/focused → stand down. Inngest rejects sub-second waits, so a
+    # grace of 0 (a valid demo setting) means "no debounce" — skip the wait; the composing
+    # re-check below still guards.
     grace = _grace()
     if grace >= dt.timedelta(seconds=1):
         focused = await ctx.step.wait_for_event(
@@ -111,10 +112,11 @@ async def thread_inbound(ctx: inngest.Context) -> dict:
 
     principal_id = plan["principal_id"]
 
-    # Early presence re-check saves the LLM turn; the commit gate re-checks atomically.
-    from chat.presence import is_present
+    # Early composing re-check (is the principal's reply box focused?) saves the LLM turn;
+    # the commit gate re-checks atomically.
+    from chat.presence import is_composing
 
-    if await is_present(chat_id, principal_id):
+    if await is_composing(chat_id, principal_id):
         return {"stood_down": "principal present"}
 
     # Already at the principal's reply cap since they last spoke, and the counterparty is

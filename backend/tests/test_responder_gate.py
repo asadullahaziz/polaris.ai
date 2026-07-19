@@ -5,8 +5,9 @@ LLM-free: exercises `chat/responder_service.py` directly. The LLM turn is smoked
 separately against OpenRouter; this is the DB guarantee that stands on its own.
 
 Covered: caps at the principal's own `agent_reply_cap`; the cap resolves live from
-the principal's profile; presence stands down; the cap resets only on the
-principal's own human message (not the counterparty's); the bounded agent↔agent
+the principal's profile; presence stands down; the gate's default stand-down check
+reads the composing (reply-box-focused) signal, not window-open; the cap resets only
+on the principal's own human message (not the counterparty's); the bounded agent↔agent
 chain terminates at each side's cap; escalate posts nothing to the counterparty;
 decline is terminal; a draft is owner-only then approve sends exactly once; the
 AgentActionLog audit is written; the dedup ON-CONFLICT layer in isolation.
@@ -140,6 +141,21 @@ def test_presence_stands_down(pair):
     r = _commit(chat, p, c, inbound["id"], presence_fn=PRESENT)
     assert r["status"] == "stood_down_present"
     assert not Message.objects.filter(chat_id=chat.id, kind="agent").exists()
+
+
+def test_gate_default_reads_composing_not_window_presence(monkeypatch):
+    """The gate's default stand-down check consults the composing (reply-box-focused)
+    signal — merely having the chat open (`presence`) no longer silences the agent.
+    `_default_present` lazy-imports, so patching the attribute is enough (no Redis)."""
+    seen = {}
+
+    def _fake_is_composing(chat_id, user_id):
+        seen["args"] = (chat_id, user_id)
+        return True
+
+    monkeypatch.setattr("chat.presence.is_composing_sync", _fake_is_composing)
+    assert svc._default_present(7, 3) is True
+    assert seen["args"] == (7, 3)  # gate consulted the box-focus signal, keyed by principal
 
 
 @pytest.mark.django_db
