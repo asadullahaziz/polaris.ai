@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 import { AddressCombobox } from "@/components/address-combobox";
 import { MandateForm } from "@/components/mandate-form";
+import { PhotoUploader } from "@/components/photo-uploader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -240,9 +241,8 @@ function NewListingInner() {
     if (description.trim()) body.description = description.trim();
     const price = num(askingPrice);
     if (price !== undefined) body.asking_price = price;
-    const urls = photos.map((u) => u.trim()).filter(Boolean);
-    if (urls.length > 0) {
-      body.media = urls.map((url, i) => ({ kind: "photo", url, sort_order: i }));
+    if (photos.length > 0) {
+      body.media = photos.map((url, i) => ({ kind: "photo", url, sort_order: i }));
     }
     if (mandate) body.mandate = mandate;
 
@@ -563,38 +563,12 @@ function NewListingInner() {
             <ImageIcon className="size-4" /> Photos
           </CardTitle>
           <CardDescription>
-            Paste hosted image URLs — there&apos;s no file upload yet.
+            Upload photos of the property — they&apos;re attached when you create
+            the listing.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-2">
-          {photos.map((url, i) => (
-            <div key={i} className="flex gap-2">
-              <Input
-                placeholder="https://…/photo.jpg"
-                value={url}
-                onChange={(e) =>
-                  setPhotos(photos.map((u, j) => (j === i ? e.target.value : u)))
-                }
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="Remove photo"
-                onClick={() => setPhotos(photos.filter((_, j) => j !== i))}
-              >
-                <Trash2 />
-              </Button>
-            </div>
-          ))}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPhotos([...photos, ""])}
-          >
-            <Plus /> Add photo URL
-          </Button>
+        <CardContent>
+          <PhotoUploader photos={photos} onChange={setPhotos} disabled={busy} />
         </CardContent>
       </Card>
 

@@ -9,6 +9,7 @@ from .views import (
     BuyBoxViewSet,
     BuyerRankView,
     ListingViewSet,
+    MediaPresignView,
     PropertyLookupView,
     PropertySearchView,
 )
@@ -23,5 +24,6 @@ urlpatterns = [
     path("properties/lookup", PropertyLookupView.as_view(), name="property-lookup"),
     path("properties/search", PropertySearchView.as_view(), name="property-search"),
     path("buyers/rank", BuyerRankView.as_view(), name="buyer-rank"),
+    path("uploads/presign", MediaPresignView.as_view(), name="upload-presign"),
     *router.urls,
 ]

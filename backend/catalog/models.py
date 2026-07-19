@@ -160,7 +160,9 @@ class ListingProperty(models.Model):
 
 
 class ListingMedia(models.Model):
-    """Photos/documents for a listing (URL only; no object storage in the demo)."""
+    """Photos/documents for a listing. The row stays URL-only; photo files live in
+    MinIO/S3 via presigned browser PUTs (`catalog.storage`), and foreign URLs
+    (seed images, legacy pasted links) are equally valid."""
 
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name="media")
     kind = models.TextField(default="photo", choices=MEDIA_KINDS)

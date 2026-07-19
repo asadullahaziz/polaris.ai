@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from django.conf import settings
 from rest_framework import serializers
 
+from . import storage
 from .models import (
     BUNDLE_TYPES,
     GEO_MODES,
@@ -184,6 +186,40 @@ class MediaItemSerializer(serializers.Serializer):
     kind = serializers.ChoiceField(choices=[k[0] for k in MEDIA_KINDS], default="photo")
     url = serializers.CharField()
     sort_order = serializers.IntegerField(required=False)
+
+
+class MediaPresignRequestSerializer(serializers.Serializer):
+    """Ask for a presigned direct-to-storage PUT. The object-key extension derives
+    from `content_type` (whitelisted), never the filename; `size` is advisory
+    (presigned PUT can't enforce it) but rejects oversized files before the
+    upload starts."""
+
+    filename = serializers.CharField(required=False, allow_blank=True)  # display only
+    content_type = serializers.ChoiceField(choices=sorted(storage.ALLOWED_IMAGE_TYPES))
+    size = serializers.IntegerField(required=False, min_value=1)
+
+    def validate_size(self, v):
+        cap = settings.STORAGE_MAX_UPLOAD_MB * 1024 * 1024
+        if v > cap:
+            raise serializers.ValidationError(
+                f"file exceeds the {settings.STORAGE_MAX_UPLOAD_MB} MB upload cap"
+            )
+        return v
+
+
+class MediaPresignResponseSerializer(serializers.Serializer):
+    upload_url = serializers.CharField()  # presigned PUT (public endpoint)
+    public_url = serializers.CharField()  # what ends up in ListingMedia.url
+    key = serializers.CharField()
+    headers = serializers.DictField(child=serializers.CharField())  # send these on the PUT
+    expires_in = serializers.IntegerField()
+    max_bytes = serializers.IntegerField()
+
+
+class ListingMediaAttachSerializer(serializers.Serializer):
+    """POST /api/listings/{id}/media/ body — same item shape as the create payload."""
+
+    media = MediaItemSerializer(many=True, allow_empty=False)
 
 
 class ListingCreateSerializer(serializers.Serializer):

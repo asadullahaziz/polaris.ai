@@ -55,6 +55,7 @@ from catalog.models import (
     BuyBox,
     BuyBoxGeo,
     Listing,
+    ListingMedia,
     ListingProperty,
     Mandate,
     Property,
@@ -77,6 +78,11 @@ N_REGISTERED = 15
 N_PROSPECTS = 25  # history-only registered users (no buy-box)
 N_SELLERS = 3
 N_LISTINGS = 15
+# Demo cover photo (Unsplash CDN, hot-linkable) — real uploads go to MinIO/S3.
+SEED_PHOTO_URL = (
+    "https://images.unsplash.com/photo-1570129477492-45c003edd2be"
+    "?auto=format&fit=crop&w=1200&q=80"
+)
 LISTING_DISCOUNT = Decimal("0.80")  # asking below market → wholesale spread
 
 # The hero path: the flagship's asking is derived from its seed-time comp ARV so its
@@ -732,6 +738,9 @@ class Command(BaseCommand):
             ListingProperty.objects.create(
                 listing=listing, property=prop, asking_price=asking, sort_order=0
             )
+            ListingMedia.objects.create(
+                listing=listing, kind="photo", url=SEED_PHOTO_URL, sort_order=0
+            )
             floor = _q2(flagship["floor"]) if i == 0 else _q2(float(asking) * 0.95)
             sm = content.SELLER_MANDATES[seller_idx % len(content.SELLER_MANDATES)]
             Mandate.objects.create(
@@ -823,7 +832,7 @@ class Command(BaseCommand):
 
         # C. Backdate (fixed day offsets → deterministic per rebuild).
         now = timezone.now()
-        for mid, days in zip(msg_ids, [9, 8, 7, 7, 6]):
+        for mid, days in zip(msg_ids, [9, 8, 7, 7, 6], strict=False):
             ts = now - dt.timedelta(days=days)
             Message.objects.filter(id=mid).update(created_at=ts, sent_at=ts)
         stale_ts = now - dt.timedelta(days=6)
@@ -888,9 +897,7 @@ class Command(BaseCommand):
                 + (f", floor ${floor:,.0f}" if floor is not None else "")
             )
             for i, spec in enumerate(content.HERO_BUYERS):
-                self.stdout.write(
-                    f"  kc_buyer_{i + 1} ({spec['strategy']}): {spec['expected']}"
-                )
+                self.stdout.write(f"  kc_buyer_{i + 1} ({spec['strategy']}): {spec['expected']}")
             self.stdout.write(
                 "  prewarm:  closed deal kc_seller_1 × kc_buyer_3; "
                 "stale thread kc_seller_1 × kc_prospect_3"

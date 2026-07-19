@@ -26,7 +26,7 @@ make seed          # idempotent Kessler County demo seed; `make seed-reset` rebu
 make sync-prompts  # push code prompts to Langfuse (ARGS="--update --promote")
 ```
 
-- Frontend http://localhost:3000 · API http://localhost:8000 · Inngest dev UI http://localhost:8288
+- Frontend http://localhost:3000 · API http://localhost:8000 · Inngest dev UI http://localhost:8288 · MinIO console http://localhost:9001
 - Single test: `docker compose exec backend pytest tests/test_chat.py -q` (or `-k <expr>`)
 - Regenerate the typed frontend API client after API changes (backend must be up): `cd frontend && npm run gen:api`
 - Migrations must be generated in-container — the host lacks GDAL, so `manage.py` won't run on the host.
@@ -34,12 +34,12 @@ make sync-prompts  # push code prompts to Langfuse (ARGS="--update --promote")
 
 ## Architecture
 
-**Stack:** Next.js 15 App Router (Tailwind 4, ShadCN, TanStack Query, generated OpenAPI client) · Django 5.2 ASGI (DRF + Channels on uvicorn) · PostgreSQL + PostGIS · Redis (channel layer + presence) · Inngest (durable async: retries, fan-out, debounce) · LangGraph agents (Postgres checkpointer) · LLMs via OpenRouter — Sonnet 4.6 workhorse, Opus 4.8 escalation tier, Haiku 4.5 for screening/triage/titling (`POLARIS_MODEL_*` env overrides) · Langfuse for prompt management + tracing (optional: keyless runs on code fallbacks with zero network).
+**Stack:** Next.js 15 App Router (Tailwind 4, ShadCN, TanStack Query, generated OpenAPI client) · Django 5.2 ASGI (DRF + Channels on uvicorn) · PostgreSQL + PostGIS · Redis (channel layer + presence) · Inngest (durable async: retries, fan-out, debounce) · LangGraph agents (Postgres checkpointer) · LLMs via OpenRouter — Sonnet 4.6 workhorse, Opus 4.8 escalation tier, Haiku 4.5 for screening/triage/titling (`POLARIS_MODEL_*` env overrides) · Langfuse for prompt management + tracing (optional: keyless runs on code fallbacks with zero network) · MinIO (S3-compatible object storage for listing photos — presigned direct-from-browser PUTs; prod is real S3/R2 by pure env switch, `STORAGE_*` vars).
 
 **Backend — one Django app per domain:**
 
 - `users` — custom email-login `User`; `UserProfile` holds the agent governance knobs (away-assistant enable, autonomy, instructions, reply cap)
-- `catalog` — `Property`, `Listing` (bundle-native M2M via `ListingProperty`), `BuyBox`(+`BuyBoxGeo`), `Sale` (behavioral purchase history), `Mandate` (per-deal floor/ceiling + instructions); media is URL-only. `services.py` is the shared write seam — REST views and agent tools both go through it.
+- `catalog` — `Property`, `Listing` (bundle-native M2M via `ListingProperty`), `BuyBox`(+`BuyBoxGeo`), `Sale` (behavioral purchase history), `Mandate` (per-deal floor/ceiling + instructions); media is URL-only in the DB (`ListingMedia.url`; photo files live in MinIO/S3 via presigned PUT — `catalog/storage.py` is the dual-endpoint boto3 helper). `services.py` is the shared write seam — REST views and agent tools both go through it.
 - `matching/engine.py` — deterministic PostGIS engine: `get_comps`, `estimate_value` (+ARV), `rank_buyers`, `assess_deal`. No LLM anywhere in scoring.
 - `chat` — human-to-human messaging: one `Chat` per user pair, listings attach to messages; the away-responder's commit gate (`responder_service.py`), Redis presence, Inngest inbound debounce
 - `ai` — copilot sessions (`AiChat`/`AiMessage`, the block-structured transcript that is the system of record — graphs rehydrate from the DB, not the LangGraph checkpoint), agent memory, and the outreach campaign/recipient ledger

@@ -41,6 +41,9 @@ inngest>=0.4,<0.6                  # Python SDK 0.4/0.5 (Python >=3.10)
 langfuse>=3.0,<4                   # Cloud-hosted prompts + LangGraph tracing
 langchain>=0.3                     # required by langfuse.langchain.CallbackHandler
 
+# ---- Object storage (presigned direct-to-S3 uploads; MinIO in dev) ----
+boto3==1.*
+
 # ---- Misc ----
 pydantic==2.*
 python-dotenv>=1.0

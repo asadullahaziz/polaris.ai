@@ -170,6 +170,7 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth_resend": env("THROTTLE_AUTH_RESEND", "10/hour"),
         "auth_reset": env("THROTTLE_AUTH_RESET", "10/hour"),
+        "uploads": env("THROTTLE_UPLOADS", "300/hour"),
     },
 }
 
@@ -214,6 +215,24 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# ---------------------------------------------------------------------------
+# Object storage (listing photos) — MinIO in dev, any S3-compatible in prod.
+# ListingMedia stays URL-only; boto3 is used directly (presigned PUT from the
+# browser + best-effort delete). Dual endpoints because SigV4 signs the Host
+# header: the backend container reaches MinIO at http://minio:9000 while the
+# browser PUTs to http://localhost:9000 — presigning must use the public one.
+# Prod: set both endpoints empty -> boto3 collapses to real AWS S3.
+# ---------------------------------------------------------------------------
+STORAGE_BUCKET = env("STORAGE_BUCKET", "polaris-media")
+STORAGE_REGION = env("STORAGE_REGION", "us-east-1")
+STORAGE_ACCESS_KEY = env("STORAGE_ACCESS_KEY", "polaris")
+STORAGE_SECRET_KEY = env("STORAGE_SECRET_KEY", "polaris-secret")
+STORAGE_ENDPOINT_INTERNAL = env("STORAGE_ENDPOINT_INTERNAL", "http://minio:9000") or None
+STORAGE_ENDPOINT_PUBLIC = env("STORAGE_ENDPOINT_PUBLIC", "http://localhost:9000") or None
+STORAGE_PUBLIC_URL_BASE = env("STORAGE_PUBLIC_URL_BASE") or None  # CDN override
+STORAGE_PRESIGN_EXPIRY = int(env("STORAGE_PRESIGN_EXPIRY", "600") or 600)
+STORAGE_MAX_UPLOAD_MB = int(env("STORAGE_MAX_UPLOAD_MB", "15") or 15)
 
 # ---------------------------------------------------------------------------
 # Provider-agnostic LLM wiring (polaris_agent.models) — the OpenRouter and

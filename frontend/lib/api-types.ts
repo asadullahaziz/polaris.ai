@@ -626,6 +626,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/listings/{id}/media/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description POST /api/listings/{id}/media/ — attach photos to an existing listing. */
+        post: operations["listings_media_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/listings/{id}/media/{media_id}/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * @description DELETE /api/listings/{id}/media/{media_id}/ — remove a photo, with
+         *     best-effort storage cleanup for our-bucket URLs.
+         */
+        delete: operations["listings_media_destroy"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/listings/{id}/valuation/": {
         parameters: {
             query?: never;
@@ -729,6 +766,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/uploads/presign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description POST /api/uploads/presign → a presigned direct-to-storage PUT for a listing
+         *     photo. The object key is user-scoped + random (listings/{user_id}/{uuid}.{ext})
+         *     and the ContentType is signed, so the browser must PUT with exactly the
+         *     returned headers. The upload itself never touches this backend.
+         */
+        post: operations["uploads_presign_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -789,6 +848,14 @@ export interface components {
          * @enum {string}
          */
         BundleTypeEnum: "single" | "package" | "portfolio";
+        /**
+         * @description * `image/gif` - image/gif
+         *     * `image/jpeg` - image/jpeg
+         *     * `image/png` - image/png
+         *     * `image/webp` - image/webp
+         * @enum {string}
+         */
+        ContentTypeEnum: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
         Email: {
             /** Format: email */
             email: string;
@@ -891,6 +958,27 @@ export interface components {
             kind: components["schemas"]["KindEnum"];
             url: string;
             sort_order?: number;
+        };
+        /**
+         * @description Ask for a presigned direct-to-storage PUT. The object-key extension derives
+         *     from `content_type` (whitelisted), never the filename; `size` is advisory
+         *     (presigned PUT can't enforce it) but rejects oversized files before the
+         *     upload starts.
+         */
+        MediaPresignRequest: {
+            filename?: string;
+            content_type: components["schemas"]["ContentTypeEnum"];
+            size?: number;
+        };
+        MediaPresignResponse: {
+            upload_url: string;
+            public_url: string;
+            key: string;
+            headers: {
+                [key: string]: string;
+            };
+            expires_in: number;
+            max_bytes: number;
         };
         Notification: {
             readonly id: number;
@@ -2067,6 +2155,54 @@ export interface operations {
             };
         };
     };
+    listings_media_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ListingDetail"];
+                "application/x-www-form-urlencoded": components["schemas"]["ListingDetail"];
+                "multipart/form-data": components["schemas"]["ListingDetail"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListingDetail"];
+                };
+            };
+        };
+    };
+    listings_media_destroy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                media_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No response body */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listings_valuation_retrieve: {
         parameters: {
             query?: never;
@@ -2193,6 +2329,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    uploads_presign_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaPresignRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["MediaPresignRequest"];
+                "multipart/form-data": components["schemas"]["MediaPresignRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaPresignResponse"];
+                };
             };
         };
     };
