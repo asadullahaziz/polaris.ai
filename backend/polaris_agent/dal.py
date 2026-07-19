@@ -491,16 +491,19 @@ def _get_listing_detail(listing_id: int, seller_id: int) -> dict:
     props = []
     for lp in lst.listingproperty_set.select_related("property").order_by("sort_order"):
         p = lp.property
+        eff = lp.effective_attrs()  # base ⊕ seller's per-listing current-state overrides
         props.append(
             {
                 "property_id": p.id,
                 "address": p.address_raw,
-                "beds": p.beds,
-                "baths": float(p.baths) if p.baths is not None else None,
-                "sqft": p.sqft,
-                "condition": p.condition,
-                "year_built": p.year_built,
+                "beds": eff["beds"],
+                "baths": float(eff["baths"]) if eff["baths"] is not None else None,
+                "sqft": eff["sqft"],
+                "condition": eff["condition"],
+                "year_built": eff["year_built"],
                 "asking_price": float(lp.asking_price) if lp.asking_price is not None else None,
+                # which current-state attrs the seller restated for this listing:
+                "seller_stated_fields": eff["seller_stated_fields"],
             }
         )
     owned = lst.seller_id == seller_id
@@ -578,14 +581,16 @@ def _update_listing(listing_id: int, seller_id: int, fields: dict) -> dict:
     return _get_listing_detail(listing_id, seller_id)
 
 
-def _get_listing_first_property(listing_id: int, seller_id: int):
-    """First property of any listing VISIBLE to the principal (own or active) — drives
-    estimate/comps, which are market data, not seller-private."""
+def _get_listing_first_lp(listing_id: int, seller_id: int):
+    """First ListingProperty of any listing VISIBLE to the principal (own or active) —
+    carries the base property AND the seller's per-listing current-state overrides, so
+    valuation/comps value the effective subject. Estimate/comps are market data, not
+    seller-private."""
     from django.db.models import Q
 
     from catalog.models import ListingProperty
 
-    lp = (
+    return (
         ListingProperty.objects.filter(
             Q(listing__seller_id=seller_id) | Q(listing__status="active"),
             listing_id=listing_id,
@@ -594,27 +599,39 @@ def _get_listing_first_property(listing_id: int, seller_id: int):
         .order_by("sort_order")
         .first()
     )
+
+
+def _get_listing_first_property(listing_id: int, seller_id: int):
+    """The base Property of the first visible listing-property (back-compat helper)."""
+    lp = _get_listing_first_lp(listing_id, seller_id)
     return lp.property if lp else None
 
 
 def _estimate_for_listing(listing_id: int, seller_id: int, arv: bool) -> dict:
-    from matching.engine import estimate_value
+    from matching.engine import estimate_current_value, estimate_value
 
-    prop = _get_listing_first_property(listing_id, seller_id)
-    if prop is None:
+    lp = _get_listing_first_lp(listing_id, seller_id)
+    if lp is None or lp.property is None:
         return {"error": f"listing {listing_id} not found or not visible to you"}
-    result = estimate_value(prop, arv=arv)
-    result["subject"] = {"address": prop.address_raw, "beds": prop.beds, "sqft": prop.sqft}
+    eff = lp.effective_attrs()
+    result = estimate_value(eff, arv=arv)
+    # Condition-aware current value (as-is): the number that moves with a renovation.
+    result["current_value"] = estimate_current_value(eff)
+    result["subject"] = {
+        "address": lp.property.address_raw,
+        "beds": eff["beds"],
+        "sqft": eff["sqft"],
+    }
     return result
 
 
 def _comps_for_listing(listing_id: int, seller_id: int) -> dict:
     from matching.engine import get_comps
 
-    prop = _get_listing_first_property(listing_id, seller_id)
-    if prop is None:
+    lp = _get_listing_first_lp(listing_id, seller_id)
+    if lp is None or lp.property is None:
         return {"error": f"listing {listing_id} not found or not visible to you"}
-    return get_comps(prop)
+    return get_comps(lp.effective_attrs())
 
 
 def _get_mandate_for_listing(listing_id: int, seller_id: int) -> dict:
@@ -643,6 +660,24 @@ def _set_mandate_for_listing(listing_id: int, seller_id: int, fields: dict) -> d
     return services.set_mandate_for_listing(listing, data)
 
 
+def _update_listing_property(
+    listing_id: int, seller_id: int, property_id: int, fields: dict
+) -> dict:
+    """Set the seller's per-listing current-state overrides for one property on their
+    listing (post-reno condition, a correction, an addition). Never mutates the shared
+    Property — the override lives on the ListingProperty through-row. Owner-scoped."""
+    from catalog import services
+    from catalog.models import Listing
+
+    listing = Listing.objects.filter(id=listing_id, seller_id=seller_id).first()
+    if listing is None:
+        return {"error": f"listing {listing_id} not found or not yours"}
+    data = dict(fields)
+    if "condition" in data:  # accept an int (1–5) or a label (full_gut/cosmetic/turnkey)
+        data["condition"] = _condition_to_int(data["condition"])
+    return services.update_listing_property(listing, property_id, data)
+
+
 property_lookup = sync_to_async(_property_lookup)
 search_properties = sync_to_async(_search_properties)
 list_seller_listings = sync_to_async(_list_seller_listings)
@@ -654,6 +689,7 @@ estimate_for_listing = sync_to_async(_estimate_for_listing)
 comps_for_listing = sync_to_async(_comps_for_listing)
 get_mandate_for_listing = sync_to_async(_get_mandate_for_listing)
 set_mandate_for_listing = sync_to_async(_set_mandate_for_listing)
+update_listing_property = sync_to_async(_update_listing_property)
 
 
 # ---- Buy-box CRUD (delegates to catalog.services — the seam shared with REST) -----
@@ -1054,6 +1090,10 @@ def _listing_public(listing, principal_id: int) -> dict:
     evaluates one it doesn't."""
     lp = listing.listingproperty_set.select_related("property").order_by("sort_order").first()
     prop = lp.property if lp else None
+    # Effective current-state = base ⊕ the seller's per-listing overrides. The buyer must
+    # see the same figures the ARV was computed on, and `seller_stated_fields` tells the
+    # disclosure layer which of these are seller-restated (to caveat, never suppress).
+    eff = lp.effective_attrs() if lp else None
     ask = (
         listing.asking_price
         if listing.asking_price is not None
@@ -1063,13 +1103,14 @@ def _listing_public(listing, principal_id: int) -> dict:
         "listing_id": listing.id,
         "title": listing.title,
         "address": prop.address_raw if prop else None,
-        "beds": prop.beds if prop else None,
-        "baths": float(prop.baths) if prop and prop.baths is not None else None,
-        "sqft": prop.sqft if prop else None,
-        "condition": prop.condition if prop else None,
-        "year_built": prop.year_built if prop else None,
+        "beds": eff["beds"] if eff else None,
+        "baths": float(eff["baths"]) if eff and eff["baths"] is not None else None,
+        "sqft": eff["sqft"] if eff else None,
+        "condition": eff["condition"] if eff else None,
+        "year_built": eff["year_built"] if eff else None,
         "asking_price": float(ask) if ask is not None else None,
         "owned_by_principal": listing.seller_id == principal_id,
+        "seller_stated_fields": eff["seller_stated_fields"] if eff else [],
     }
 
 
@@ -1330,19 +1371,23 @@ def _responder_estimate(listing_id: int) -> dict:
         .order_by("sort_order")
         .first()
     )
-    prop = lp.property if lp else None
-    if prop is None:
+    if lp is None or lp.property is None:
         return {}
+    eff = lp.effective_attrs()  # value the effective subject (base ⊕ seller overrides)
     # Both figures: as-is market value defends the asking price; ARV answers the
     # wholesale buyer's "ARV supported by comps?" (share flags gate what crosses).
-    val = estimate_value(prop, arv=False)
-    arv_val = estimate_value(prop, arv=True)
-    comps = get_comps(prop)
+    val = estimate_value(eff, arv=False)
+    arv_val = estimate_value(eff, arv=True)
+    comps = get_comps(eff)
     return {
         "value": val,
         "arv": arv_val,
         "n_comps": comps.get("n"),
         "comps": comps.get("comps", [])[:5],
+        # provenance: True when the shared value/ARV derive from seller-restated attrs, so
+        # render_shared_lines caveats them before they cross to the counterparty.
+        "seller_stated": bool(eff["seller_stated_fields"]),
+        "seller_stated_fields": eff["seller_stated_fields"],
     }
 
 

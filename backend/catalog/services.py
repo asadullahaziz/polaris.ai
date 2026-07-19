@@ -18,7 +18,19 @@ from django.db import transaction
 from django.db.models import Max
 
 from . import storage
-from .models import BuyBox, BuyBoxGeo, Listing, ListingMedia, ListingProperty, Mandate, Property
+from .models import (
+    _LP_OVERRIDE_FIELDS,
+    BuyBox,
+    BuyBoxGeo,
+    Listing,
+    ListingMedia,
+    ListingProperty,
+    Mandate,
+    Property,
+)
+
+# Override fields stored as DecimalField on the through-row (coerced from str/num input).
+_LP_DECIMAL_OVERRIDES = {"baths"}
 
 
 def _to_decimal(v):
@@ -175,11 +187,18 @@ def create_listing(user, data: dict) -> Listing:
 
     for i, item in enumerate(data.get("properties", []) or []):
         prop = attach_or_create_property(item)
+        ov = item.get("overrides") or {}
         ListingProperty.objects.create(
             listing=listing,
             property=prop,
             asking_price=item.get("asking_price"),
             sort_order=item.get("sort_order", i),
+            # per-listing current-state overrides (never mutate the shared Property):
+            **{
+                k: (_to_decimal(ov[k]) if k in _LP_DECIMAL_OVERRIDES else ov[k])
+                for k in _LP_OVERRIDE_FIELDS
+                if ov.get(k) is not None
+            },
         )
 
     for i, m in enumerate(data.get("media", []) or []):
@@ -211,6 +230,55 @@ def update_listing(listing: Listing, data: dict) -> Listing:
     if data.get("mandate") is not None:
         set_mandate_for_listing(listing, data["mandate"])
     return listing
+
+
+# --- per-listing property overrides (the "edit the property on this listing" seam) ---
+def _listing_property_public(lp: ListingProperty) -> dict:
+    """The override + effective view of one listing-property (read shape shared by the
+    write seam's return, REST, and the copilot tool)."""
+    eff = lp.effective_attrs()
+    return {
+        "listing_id": lp.listing_id,
+        "property_id": lp.property_id,
+        "overrides": {
+            k: (float(v) if isinstance(v, Decimal) else v)
+            for k in _LP_OVERRIDE_FIELDS
+            if (v := getattr(lp, k)) is not None
+        },
+        "effective": {
+            "beds": eff["beds"],
+            "baths": float(eff["baths"]) if eff["baths"] is not None else None,
+            "sqft": eff["sqft"],
+            "grade": eff["grade"],
+            "condition": eff["condition"],
+            "year_built": eff["year_built"],
+            "yr_renovated": eff["yr_renovated"],
+        },
+        "seller_stated_fields": eff["seller_stated_fields"],
+    }
+
+
+@transaction.atomic
+def update_listing_property(listing: Listing, property_id: int, overrides: dict) -> dict:
+    """Set the seller's per-listing current-state overrides for one property on `listing`.
+
+    Keyed on (listing, property) — the through-row has a composite PK, no surrogate id.
+    A key present in `overrides` is applied (an explicit ``None`` clears that override; a
+    value sets it); an absent key is left untouched. Never mutates the shared Property row —
+    the override lives on the ListingProperty, protecting the comp basis.
+    """
+    lp = ListingProperty.objects.filter(listing=listing, property_id=property_id).first()
+    if lp is None:
+        return {"error": f"property {property_id} is not on listing {listing.id}"}
+    dirty = []
+    for k in _LP_OVERRIDE_FIELDS:
+        if k in overrides:
+            v = overrides[k]
+            setattr(lp, k, _to_decimal(v) if k in _LP_DECIMAL_OVERRIDES else v)
+            dirty.append(k)
+    if dirty:
+        lp.save(update_fields=dirty)
+    return _listing_property_public(lp)
 
 
 # --- listing media (create-time attach is inline in create_listing; these are

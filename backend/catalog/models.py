@@ -139,9 +139,28 @@ class Listing(models.Model):
         return f"listing:{self.pk} ({self.bundle_type}/{self.status})"
 
 
+# The per-listing current-state override fields. A seller can restate these for THIS
+# listing (post-renovation condition, a correction, an addition) without mutating the
+# shared Property row (the comp basis). NULL on any field = inherit the base Property
+# value; the engine values the effective subject = Property base ⊕ these overrides.
+_LP_OVERRIDE_FIELDS = (
+    "condition",
+    "grade",
+    "sqft",
+    "beds",
+    "baths",
+    "year_built",
+    "yr_renovated",
+)
+
+
 class ListingProperty(models.Model):
     """M2M listing↔property. A property may appear in several listings (no per-user
-    uniqueness); it just can't appear twice in one listing (the composite PK)."""
+    uniqueness); it just can't appear twice in one listing (the composite PK).
+
+    Besides the join, the row carries the seller's per-listing current-state overrides
+    (`_LP_OVERRIDE_FIELDS`) — the mutable "what I'm selling now" layer that shadows the
+    immutable base Property without touching it. See `effective_attrs`."""
 
     pk = models.CompositePrimaryKey("listing_id", "property_id")
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE)
@@ -151,12 +170,57 @@ class ListingProperty(models.Model):
     )
     sort_order = models.SmallIntegerField(default=0)
 
+    # --- current-state overrides (NULL = inherit base Property) ---
+    condition = models.SmallIntegerField(null=True, blank=True)  # KC 1–5
+    grade = models.SmallIntegerField(null=True, blank=True)  # KC 1–13
+    sqft = models.IntegerField(null=True, blank=True)
+    beds = models.SmallIntegerField(null=True, blank=True)
+    baths = models.DecimalField(max_digits=3, decimal_places=1, null=True, blank=True)
+    year_built = models.SmallIntegerField(null=True, blank=True)
+    yr_renovated = models.SmallIntegerField(null=True, blank=True)
+
     class Meta:
         db_table = "listing_property"
         # FK on `property` already carries an index (= listing_property_property_idx).
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"lp:{self.listing_id}×{self.property_id}"
+
+    def effective_attrs(self) -> dict:
+        """The effective subject = base Property ⊕ per-listing overrides — the single
+        overlay the engine and the responder DAL value against. An override wins only when
+        explicitly set (`is not None`, so a legitimate 0 counts; NULL inherits the base).
+        Identity/geo/waterfront/lot are never overridable and come straight from the base.
+
+        `seller_stated_fields` lists which attributes are seller-restated for THIS listing —
+        the deterministic provenance the disclosure layer uses to caveat any counterparty-
+        facing figure derived from them."""
+        p = self.property
+
+        def ov(name):
+            v = getattr(self, name)
+            return v if v is not None else getattr(p, name)
+
+        return {
+            # base-only (never overridable):
+            "pk": p.pk,
+            "geom": p.geom,
+            "property_type": p.property_type,
+            "waterfront": p.waterfront,
+            "lot_size_sqft": p.lot_size_sqft,
+            # overridable current-state:
+            "beds": ov("beds"),
+            "baths": ov("baths"),
+            "sqft": ov("sqft"),
+            "grade": ov("grade"),
+            "condition": ov("condition"),
+            "year_built": ov("year_built"),
+            "yr_renovated": ov("yr_renovated"),
+            # provenance (which fields the seller restated):
+            "seller_stated_fields": [
+                f for f in _LP_OVERRIDE_FIELDS if getattr(self, f) is not None
+            ],
+        }
 
 
 class ListingMedia(models.Model):

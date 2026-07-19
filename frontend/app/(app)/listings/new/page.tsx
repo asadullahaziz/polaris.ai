@@ -38,6 +38,7 @@ import {
   type Property,
   type PropertyItemInput,
   type PropertyLookup,
+  type PropertyOverrides,
   type PropertySearchResult,
 } from "@/lib/api";
 import { fmtMoney, uuid } from "@/lib/hooks";
@@ -77,15 +78,17 @@ function num(s: string): number | undefined {
 
 function attrsLine(row: PropRow): string {
   const src = row.matched ? row.detail : null;
-  const beds = src ? src.beds : row.item.beds ?? null;
-  const baths = src ? src.baths : row.item.baths ?? null;
-  const sqft = src ? src.sqft : row.item.sqft ?? null;
+  const ov = row.item.overrides ?? {};
+  const beds = ov.beds ?? (src ? src.beds : row.item.beds) ?? null;
+  const baths = ov.baths ?? (src ? src.baths : row.item.baths) ?? null;
+  const sqft = ov.sqft ?? (src ? src.sqft : row.item.sqft) ?? null;
   const type = src ? src.property_type : row.item.property_type ?? null;
   const parts: string[] = [];
   if (beds != null) parts.push(`${beds} bd`);
   if (baths != null) parts.push(`${baths} ba`);
   if (sqft != null) parts.push(`${sqft.toLocaleString()} sqft`);
   if (type) parts.push(type);
+  if (Object.keys(ov).length > 0) parts.push("edited");
   return parts.join(" · ");
 }
 
@@ -120,6 +123,15 @@ function NewListingInner() {
   const [npYear, setNpYear] = useState("");
   const [npCondition, setNpCondition] = useState("");
   const [npWaterfront, setNpWaterfront] = useState(false);
+
+  // Matched-property override sub-form (current-state restated for THIS listing; base
+  // value shows as the placeholder, a blank field keeps the value on record).
+  const [ovCondition, setOvCondition] = useState("");
+  const [ovBeds, setOvBeds] = useState("");
+  const [ovBaths, setOvBaths] = useState("");
+  const [ovSqft, setOvSqft] = useState("");
+  const [ovYear, setOvYear] = useState("");
+  const [ovReno, setOvReno] = useState("");
 
   const [photos, setPhotos] = useState<string[]>([]);
   const [mandate, setMandate] = useState<MandateInput | null>(null);
@@ -164,6 +176,17 @@ function NewListingInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reset the override sub-form whenever a different property is matched.
+  const matchedId = lookup?.found ? lookup.property.id : null;
+  useEffect(() => {
+    setOvCondition("");
+    setOvBeds("");
+    setOvBaths("");
+    setOvSqft("");
+    setOvYear("");
+    setOvReno("");
+  }, [matchedId]);
+
   function pushRow(row: PropRow) {
     const next = [...rows, row];
     setRows(next);
@@ -182,12 +205,27 @@ function NewListingInner() {
       toast.error("That property is already on this listing.");
       return;
     }
+    // Any restated current-state becomes a per-listing override (base stays untouched).
+    const overrides: PropertyOverrides = {};
+    if (ovCondition) overrides.condition = parseInt(ovCondition, 10);
+    const beds = num(ovBeds);
+    if (beds !== undefined) overrides.beds = beds;
+    const baths = num(ovBaths);
+    if (baths !== undefined) overrides.baths = baths;
+    const sqft = num(ovSqft);
+    if (sqft !== undefined) overrides.sqft = sqft;
+    const year = num(ovYear);
+    if (year !== undefined) overrides.year_built = year;
+    const reno = num(ovReno);
+    if (reno !== undefined) overrides.yr_renovated = reno;
+    const item: PropertyItemInput = { property_id: p.id };
+    if (Object.keys(overrides).length > 0) item.overrides = overrides;
     pushRow({
       key: uuid(),
       matched: true,
       address: p.address_raw,
       detail: p,
-      item: { property_id: p.id },
+      item,
       askingPrice: "",
     });
   }
@@ -372,15 +410,16 @@ function NewListingInner() {
           </div>
 
           {matchedProperty && (
-            <div className="space-y-2 rounded-md border p-4">
+            <div className="space-y-3 rounded-md border p-4">
               <div className="flex items-center gap-2">
                 <Badge>Matched</Badge>
                 <span className="text-sm text-muted-foreground">
-                  Existing property — attributes are read-only
+                  Existing property — update its current state if it has changed
                 </span>
               </div>
               <p className="font-medium">{matchedProperty.address_raw}</p>
               <p className="text-sm text-muted-foreground">
+                On record:{" "}
                 {[
                   matchedProperty.beds != null && `${matchedProperty.beds} bd`,
                   matchedProperty.baths != null && `${matchedProperty.baths} ba`,
@@ -396,6 +435,84 @@ function NewListingInner() {
                   .filter(Boolean)
                   .join(" · ")}
               </p>
+              <p className="text-xs text-muted-foreground">
+                Leave a field blank to keep the value on record. Anything you change here
+                applies to this listing only (the shared record is never altered) and is
+                shown to buyers as seller-stated.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="grid gap-2">
+                  <Label>Condition</Label>
+                  <Select value={ovCondition} onValueChange={setOvCondition}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue
+                        placeholder={
+                          matchedProperty.condition != null
+                            ? `${matchedProperty.condition}/5 on record`
+                            : "Select…"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(CONDITION_LABELS).map(([v, label]) => (
+                        <SelectItem key={v} value={v}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="ov-sqft">Sqft</Label>
+                  <Input
+                    id="ov-sqft"
+                    type="number"
+                    value={ovSqft}
+                    placeholder={matchedProperty.sqft?.toString() ?? ""}
+                    onChange={(e) => setOvSqft(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="ov-beds">Beds</Label>
+                  <Input
+                    id="ov-beds"
+                    type="number"
+                    value={ovBeds}
+                    placeholder={matchedProperty.beds?.toString() ?? ""}
+                    onChange={(e) => setOvBeds(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="ov-baths">Baths</Label>
+                  <Input
+                    id="ov-baths"
+                    type="number"
+                    value={ovBaths}
+                    placeholder={matchedProperty.baths?.toString() ?? ""}
+                    onChange={(e) => setOvBaths(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="ov-year">Year built</Label>
+                  <Input
+                    id="ov-year"
+                    type="number"
+                    value={ovYear}
+                    placeholder={matchedProperty.year_built?.toString() ?? ""}
+                    onChange={(e) => setOvYear(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="ov-reno">Renovated (year)</Label>
+                  <Input
+                    id="ov-reno"
+                    type="number"
+                    value={ovReno}
+                    placeholder="e.g. 2026"
+                    onChange={(e) => setOvReno(e.target.value)}
+                  />
+                </div>
+              </div>
               <Button type="button" size="sm" onClick={attachMatched}>
                 <Plus /> Attach
               </Button>

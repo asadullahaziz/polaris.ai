@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from django.conf import settings
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from . import storage
 from .models import (
+    _LP_OVERRIDE_FIELDS,
     BUNDLE_TYPES,
     GEO_MODES,
     GEO_TYPES,
@@ -48,11 +52,40 @@ class ListingMediaSerializer(serializers.ModelSerializer):
 
 
 class ListingPropertySerializer(serializers.Serializer):
-    """A property as it appears in a listing: the shared Property + per-listing price."""
+    """A property as it appears in a listing: the immutable shared Property (comp basis),
+    the per-listing price, plus the seller's current-state overrides. `overrides` is the
+    raw restated values (kept separate from `property` so base vs override never blur),
+    `effective` is base ⊕ override (what the engine values), and `seller_stated_fields`
+    flags which attrs are seller-restated (drives the "seller-stated" UI badge)."""
 
     property = PropertySerializer(read_only=True)
     asking_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
     sort_order = serializers.IntegerField()
+    overrides = serializers.SerializerMethodField()
+    effective = serializers.SerializerMethodField()
+    seller_stated_fields = serializers.SerializerMethodField()
+
+    def get_overrides(self, lp) -> dict:
+        return {
+            k: (float(v) if isinstance(v, Decimal) else v)
+            for k in _LP_OVERRIDE_FIELDS
+            if (v := getattr(lp, k)) is not None
+        }
+
+    def get_effective(self, lp) -> dict:
+        eff = lp.effective_attrs()
+        return {
+            "beds": eff["beds"],
+            "baths": float(eff["baths"]) if eff["baths"] is not None else None,
+            "sqft": eff["sqft"],
+            "grade": eff["grade"],
+            "condition": eff["condition"],
+            "year_built": eff["year_built"],
+            "yr_renovated": eff["yr_renovated"],
+        }
+
+    def get_seller_stated_fields(self, lp) -> list:
+        return lp.effective_attrs()["seller_stated_fields"]
 
 
 class MandateSerializer(serializers.Serializer):
@@ -138,6 +171,7 @@ class ListingDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    @extend_schema_field(ListingPropertySerializer(many=True))
     def get_properties(self, obj):
         lps = sorted(obj.listingproperty_set.all(), key=lambda lp: lp.sort_order)
         return ListingPropertySerializer(lps, many=True).data
@@ -155,8 +189,34 @@ class ListingDetailSerializer(serializers.ModelSerializer):
         return get_mandate_for_listing(obj)
 
 
+class ListingPropertyOverrideSerializer(serializers.Serializer):
+    """The seller's per-listing current-state overrides for one property (post-reno
+    condition, a county-record correction, an addition). All optional (partial edits);
+    an explicit ``null`` clears an override, a value sets it. Validation is load-bearing
+    here — unlike scalar listing edits, these figures feed the deal math, so an
+    out-of-range rating would silently corrupt valuation. Never touches the base Property.
+    `sqft` is intentionally unbounded relative to base: a rebuild/addition legitimately
+    changes it, and the counterparty-facing figures are caveated seller-stated."""
+
+    condition = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=5)
+    grade = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=13)
+    sqft = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    beds = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    baths = serializers.DecimalField(
+        max_digits=3, decimal_places=1, required=False, allow_null=True, min_value=0
+    )
+    year_built = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1800, max_value=2100
+    )
+    yr_renovated = serializers.IntegerField(
+        required=False, allow_null=True, min_value=0, max_value=2100
+    )
+
+
 class PropertyItemSerializer(serializers.Serializer):
-    """One entry in a listing's property list: a match (`property_id`) OR new fields."""
+    """One entry in a listing's property list: a match (`property_id`) OR new fields,
+    plus optional per-listing current-state `overrides` (kept distinct from the
+    create-a-new-Property fields)."""
 
     property_id = serializers.IntegerField(required=False, allow_null=True)
     address = serializers.CharField(required=False, allow_blank=True)
@@ -173,6 +233,7 @@ class PropertyItemSerializer(serializers.Serializer):
         max_digits=12, decimal_places=2, required=False, allow_null=True
     )
     sort_order = serializers.IntegerField(required=False)
+    overrides = ListingPropertyOverrideSerializer(required=False)
 
     def validate(self, attrs):
         if not attrs.get("property_id") and not (attrs.get("address") or "").strip():

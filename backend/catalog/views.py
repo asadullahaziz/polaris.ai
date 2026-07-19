@@ -18,7 +18,12 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from matching.engine import estimate_value, get_comps, rank_buyers_for_attrs
+from matching.engine import (
+    estimate_current_value,
+    estimate_value,
+    get_comps,
+    rank_buyers_for_attrs,
+)
 
 from . import services, storage
 from .models import Listing
@@ -27,6 +32,7 @@ from .serializers import (
     ListingCreateSerializer,
     ListingDetailSerializer,
     ListingMediaAttachSerializer,
+    ListingPropertyOverrideSerializer,
     ListingSummarySerializer,
     ListingUpdateSerializer,
     MandateSerializer,
@@ -180,27 +186,31 @@ class ListingViewSet(
         detail = self.get_queryset().get(id=listing.id)
         return Response(ListingDetailSerializer(detail, context={"request": request}).data)
 
-    def _first_property(self, listing):
-        lp = listing.listingproperty_set.select_related("property").order_by("sort_order").first()
-        return lp.property if lp else None
+    def _first_lp(self, listing):
+        """First listing-property (base Property + the seller's per-listing overrides)."""
+        return listing.listingproperty_set.select_related("property").order_by("sort_order").first()
 
     @action(detail=True, methods=["get"])
     def valuation(self, request, pk=None):
-        """On-demand market value + comps for the listing (arv=1 for after-repair)."""
-        prop = self._first_property(self.get_object())
-        if prop is None:
+        """On-demand market value + comps for the listing (arv=1 for after-repair), valued
+        on the effective subject (base ⊕ seller overrides). `current_value` is the
+        condition-aware as-is number that moves with a renovation."""
+        lp = self._first_lp(self.get_object())
+        if lp is None or lp.property is None:
             return Response({"detail": "listing has no property"}, status=400)
+        eff = lp.effective_attrs()
         arv = request.query_params.get("arv") in ("1", "true", "True")
-        ev = estimate_value(prop, arv=arv)
+        ev = estimate_value(eff, arv=arv)
         ev["comps"] = ev["comps"][:8]
+        ev["current_value"] = estimate_current_value(eff)
         return Response(ev)
 
     @action(detail=True, methods=["get"])
     def comps(self, request, pk=None):
-        prop = self._first_property(self.get_object())
-        if prop is None:
+        lp = self._first_lp(self.get_object())
+        if lp is None or lp.property is None:
             return Response({"detail": "listing has no property"}, status=400)
-        return Response(get_comps(prop))
+        return Response(get_comps(lp.effective_attrs()))
 
     @action(detail=True, methods=["get", "put"])
     def mandate(self, request, pk=None):
@@ -235,6 +245,22 @@ class ListingViewSet(
         listing = self.get_object()  # 404s if not owned
         if not services.remove_listing_media(listing, int(media_id)):
             return Response({"detail": "media not found"}, status=404)
+        detail = self.get_queryset().get(id=listing.id)
+        return Response(ListingDetailSerializer(detail, context={"request": request}).data)
+
+    @extend_schema(request=ListingPropertyOverrideSerializer, responses=ListingDetailSerializer)
+    @action(detail=True, methods=["patch"], url_path=r"properties/(?P<property_id>\d+)")
+    def property_overrides(self, request, pk=None, property_id=None):
+        """PATCH /api/listings/{id}/properties/{property_id}/ — set the seller's
+        per-listing current-state overrides for one property (post-reno condition, a
+        correction, an addition). Never mutates the shared Property. Owner-scoped via
+        get_object(); delegates to the same services seam the copilot tool uses."""
+        listing = self.get_object()  # 404s if not owned
+        ser = ListingPropertyOverrideSerializer(data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        result = services.update_listing_property(listing, int(property_id), ser.validated_data)
+        if "error" in result:
+            return Response(result, status=404)
         detail = self.get_queryset().get(id=listing.id)
         return Response(ListingDetailSerializer(detail, context={"request": request}).data)
 

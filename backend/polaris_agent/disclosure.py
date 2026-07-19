@@ -205,6 +205,15 @@ def render_shared_lines(tool_results: dict, approved: dict) -> list[str]:
         arv_v = (val.get("arv") or {}).get("point")
         if arv_v is not None:
             lines.append(f"Renovated comps support an ARV around ${int(arv_v):,}.")
+        # When these figures rest on the seller's restated current-state (a renovation,
+        # a correction), the counterparty is entitled to know they are not verified. This
+        # caveat is unconditional and code-authored — a fooled model cannot omit it — but
+        # scoped to the subject figures only, never the third-party comp lines below.
+        if val.get("seller_stated"):
+            lines.append(
+                "These figures reflect the seller's stated condition and updates, "
+                "which are not independently verified."
+            )
     if approved.get("comps"):
         for c in (val.get("comps") or [])[:3]:
             price = c.get("price")

@@ -250,3 +250,36 @@ def test_render_shared_lines_empty_when_nothing_approved():
     assert (
         render_shared_lines({"valuation": _VALUATION}, {"comps": False, "valuation": False}) == []
     )
+
+
+# ---- seller-stated caveat (code-authored, scoped to subject figures) -------------
+_VALUATION_SELLER_STATED = {
+    **_VALUATION,
+    "seller_stated": True,
+    "seller_stated_fields": ["condition"],
+}
+_CAVEAT_MARK = "not independently verified"
+
+
+def test_render_shared_lines_caveats_seller_stated_valuation():
+    lines = render_shared_lines(
+        {"valuation": _VALUATION_SELLER_STATED}, {"comps": True, "valuation": True}
+    )
+    assert any(_CAVEAT_MARK in line for line in lines)  # the caveat is present
+    comp_lines = [ln for ln in lines if ln.startswith("Comp:")]
+    assert comp_lines and all(_CAVEAT_MARK not in ln for ln in comp_lines)  # never on comps
+    for line in lines:  # still style-clean (feeds the drafting prompt)
+        assert style_check(line) == (True, None), line
+
+
+def test_render_shared_lines_no_caveat_for_base_only_valuation():
+    lines = render_shared_lines({"valuation": _VALUATION}, {"comps": True, "valuation": True})
+    assert all(_CAVEAT_MARK not in line for line in lines)
+
+
+def test_render_shared_lines_no_caveat_when_valuation_not_shared():
+    # seller-stated, but only comps approved → no subject figures cross, so no caveat
+    lines = render_shared_lines(
+        {"valuation": _VALUATION_SELLER_STATED}, {"comps": True, "valuation": False}
+    )
+    assert all(_CAVEAT_MARK not in line for line in lines)

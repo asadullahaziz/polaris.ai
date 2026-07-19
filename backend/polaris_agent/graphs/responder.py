@@ -133,7 +133,13 @@ def _facts_line(listing: dict) -> str:
         ]
         if v is not None
     )
-    return facts or "details sparse"
+    line = facts or "details sparse"
+    # Soft provenance: which of the above the seller restated for this listing (the
+    # guaranteed, code-rendered caveat rides the shared figures via render_shared_lines).
+    stated = listing.get("seller_stated_fields") or []
+    if stated:
+        line += f" (seller-stated, unverified: {', '.join(stated)})"
+    return line
 
 
 def _public_block(state: ResponderState) -> str:
@@ -202,6 +208,17 @@ def _private_block(state: ResponderState) -> str:
                 "below it and never propose above it."
             )
     val_line = _valuation_line(tr["valuation"]) if tr.get("valuation") else "none"
+    # If the deal math / valuation rests on seller-restated current-state, tell Stage 1 so it
+    # reasons with that discount (buyer-side: assess_deal stays private, so this never leaks a
+    # figure — it only tempers confidence in an unverified spread).
+    stated = (state.get("focal_listing") or {}).get("seller_stated_fields") or []
+    stated_line = ""
+    if stated:
+        stated_line = (
+            f"NOTE: the deal math and valuation above rest on the seller's stated "
+            f"{', '.join(stated)} (not independently verified) — treat any resulting spread "
+            "or value as optimistic until confirmed.\n"
+        )
     mem = "; ".join(x.get("content", "") for x in (state.get("memory") or [])) or "none"
     instr = state.get("agent_instructions") or "none"
 
@@ -233,6 +250,7 @@ def _private_block(state: ResponderState) -> str:
         f"{urgency_line}\n"
         f"Deterministic deal assessment: {assess_line}\n"
         f"Deterministic valuation: {val_line}\n"
+        f"{stated_line}"
         f"Your memory of this principal: {mem}"
     )
 

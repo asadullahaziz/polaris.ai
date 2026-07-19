@@ -148,6 +148,165 @@ def test_attach_existing_property_is_not_mutated(client):
 
 
 @pytest.mark.django_db
+def test_attach_existing_property_with_overrides_keeps_base_untouched(client):
+    existing = Property.objects.create(
+        address_raw="600 Oak St", address_norm="600 oak st", beds=3, sqft=1800, condition=2
+    )
+    resp = client.post(
+        LISTINGS,
+        {
+            "asking_price": "500000",
+            "properties": [
+                {
+                    "property_id": existing.id,
+                    "asking_price": "500000",
+                    "overrides": {"condition": 5, "sqft": 2100},
+                }
+            ],
+        },
+        format="json",
+    )
+    assert resp.status_code == 201, resp.data
+    pp = resp.data["properties"][0]
+    assert pp["overrides"] == {"condition": 5, "sqft": 2100}
+    assert pp["effective"]["condition"] == 5 and pp["effective"]["sqft"] == 2100
+    assert set(pp["seller_stated_fields"]) == {"condition", "sqft"}
+    # base Property still shows the immutable comp-basis values
+    assert pp["property"]["condition"] == 2 and pp["property"]["sqft"] == 1800
+    existing.refresh_from_db()
+    assert existing.condition == 2 and existing.sqft == 1800
+    assert Property.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_patch_listing_property_overrides_roundtrips_and_clears(client):
+    existing = Property.objects.create(
+        address_raw="12 Elm St", address_norm="12 elm st", beds=3, sqft=1500, condition=2
+    )
+    lid = client.post(
+        LISTINGS,
+        {"asking_price": "300000", "properties": [{"property_id": existing.id}]},
+        format="json",
+    ).data["id"]
+    url = f"{LISTINGS}{lid}/properties/{existing.id}/"
+
+    resp = client.patch(url, {"condition": 5, "yr_renovated": 2026}, format="json")
+    assert resp.status_code == 200, resp.data
+    pp = resp.data["properties"][0]
+    assert pp["overrides"]["condition"] == 5 and pp["overrides"]["yr_renovated"] == 2026
+    assert pp["effective"]["condition"] == 5
+
+    # an explicit null clears one override, leaving the rest
+    resp2 = client.patch(url, {"condition": None}, format="json")
+    assert resp2.status_code == 200
+    ov2 = resp2.data["properties"][0]["overrides"]
+    assert "condition" not in ov2 and ov2["yr_renovated"] == 2026
+
+    existing.refresh_from_db()  # base comp-basis row never touched
+    assert existing.condition == 2 and existing.sqft == 1500
+
+
+@pytest.mark.django_db
+def test_patch_override_validation_rejects_out_of_range(client):
+    existing = Property.objects.create(address_raw="9 Fir St", address_norm="9 fir st", condition=3)
+    lid = client.post(
+        LISTINGS,
+        {"asking_price": "200000", "properties": [{"property_id": existing.id}]},
+        format="json",
+    ).data["id"]
+    resp = client.patch(
+        f"{LISTINGS}{lid}/properties/{existing.id}/", {"condition": 9}, format="json"
+    )
+    assert resp.status_code == 400  # condition must be 1-5
+
+
+@pytest.mark.django_db
+def test_patch_property_not_on_listing_is_404(client):
+    existing = Property.objects.create(address_raw="3 Ash St", address_norm="3 ash st", condition=3)
+    lid = client.post(
+        LISTINGS,
+        {"asking_price": "200000", "properties": [{"property_id": existing.id}]},
+        format="json",
+    ).data["id"]
+    resp = client.patch(f"{LISTINGS}{lid}/properties/999999/", {"condition": 4}, format="json")
+    assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+def test_valuation_action_returns_condition_aware_current_value(client):
+    """Through the real REST stack: the valuation action values the effective subject and
+    returns a condition-aware current value that climbs when the seller states turnkey."""
+    import datetime as dt
+    from decimal import Decimal
+
+    from django.contrib.gis.geos import Point
+    from django.utils import timezone
+
+    def mk(apn, lon, price="500000", **kw):
+        return Property.objects.create(
+            apn=apn,
+            county_fips="53033",
+            address_norm=f"v:{apn}",
+            address_raw=f"comp {apn}",
+            geom=Point(lon, 47.60, srid=4326),
+            property_type="sfr",
+            waterfront=False,
+            last_sale_price=Decimal(price),
+            last_sale_date=timezone.now().date() - dt.timedelta(days=30),
+            **kw,
+        )
+
+    subj = mk("vsub", -122.330, beds=3, sqft=2000, grade=7, condition=2)
+    for i in range(8):  # turnkey comp cluster so ARV resolves
+        mk(
+            f"vc{i}",
+            -122.330 + 0.002 * i,
+            price=str(490000 + 5000 * i),
+            beds=3,
+            sqft=2000,
+            grade=7,
+            condition=4,
+        )
+    lid = client.post(
+        LISTINGS,
+        {"asking_price": "450000", "properties": [{"property_id": subj.id}]},
+        format="json",
+    ).data["id"]
+
+    base = client.get(f"{LISTINGS}{lid}/valuation/").data
+    assert base["current_value"]["point"] is not None
+    assert base["current_value"]["seller_stated"] is False
+    base_cv = base["current_value"]["point"]
+
+    # seller states turnkey → less rehab → current value climbs, flagged seller-stated
+    client.patch(f"{LISTINGS}{lid}/properties/{subj.id}/", {"condition": 5}, format="json")
+    after = client.get(f"{LISTINGS}{lid}/valuation/").data
+    assert after["current_value"]["point"] > base_cv
+    assert after["current_value"]["seller_stated"] is True
+
+
+@pytest.mark.django_db
+def test_patch_property_overrides_is_owner_scoped(client, other_client):
+    existing = Property.objects.create(
+        address_raw="7 Oakwood", address_norm="7 oakwood", condition=3
+    )
+    lid = client.post(
+        LISTINGS,
+        {
+            "asking_price": "200000",
+            "status": "active",
+            "properties": [{"property_id": existing.id}],
+        },
+        format="json",
+    ).data["id"]
+    # another user cannot edit overrides on someone else's listing
+    resp = other_client.patch(
+        f"{LISTINGS}{lid}/properties/{existing.id}/", {"condition": 5}, format="json"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.django_db
 def test_listing_requires_at_least_one_property(client):
     resp = client.post(LISTINGS, {"asking_price": "100000", "properties": []}, format="json")
     assert resp.status_code == 400

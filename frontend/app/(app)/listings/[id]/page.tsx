@@ -53,9 +53,10 @@ import {
   openChatWith,
   setListingMandate,
   updateListing,
+  updateListingProperty,
   type ListingDetail,
   type MandateInput,
-  type Property,
+  type PropertyOverrides,
   type Valuation,
 } from "@/lib/api";
 import { fmtDate, fmtMoney, useMe } from "@/lib/hooks";
@@ -85,41 +86,228 @@ function statusVariant(s: string): "default" | "secondary" | "outline" {
   return "outline";
 }
 
-function PropertyCard({
-  p,
-  price,
+type ListingProp = ListingDetail["properties"][number];
+
+function OvField({
+  label,
+  value,
+  setValue,
+  placeholder,
 }: {
-  p: Property;
-  price: string | number | null;
+  label: string;
+  value: string;
+  setValue: (v: string) => void;
+  placeholder: number | null;
 }) {
-  const attrs: [string, string][] = [
-    ["Beds", p.beds != null ? String(p.beds) : "—"],
-    ["Baths", p.baths != null ? String(p.baths) : "—"],
-    ["Sqft", p.sqft != null ? p.sqft.toLocaleString() : "—"],
-    ["Lot", p.lot_size_sqft != null ? `${p.lot_size_sqft.toLocaleString()} sqft` : "—"],
-    ["Year built", p.year_built != null ? String(p.year_built) : "—"],
-    ["Condition", p.condition != null ? CONDITION_LABELS[p.condition] ?? String(p.condition) : "—"],
-    ["Grade", p.grade != null ? String(p.grade) : "—"],
-    ["Waterfront", p.waterfront ? "Yes" : "No"],
+  return (
+    <div className="grid gap-2">
+      <Label>{label}</Label>
+      <Input
+        type="number"
+        value={value}
+        placeholder={placeholder != null ? String(placeholder) : ""}
+        onChange={(e) => setValue(e.target.value)}
+      />
+    </div>
+  );
+}
+
+function PropertyOverrideDialog({
+  listingId,
+  pp,
+  open,
+  onOpenChange,
+  onUpdated,
+}: {
+  listingId: number;
+  pp: ListingProp;
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onUpdated: () => void;
+}) {
+  const p = pp.property;
+  const ov = pp.overrides;
+  const s = (v: number | null | undefined) => (v == null ? "" : String(v));
+  const [condition, setCondition] = useState(s(ov.condition));
+  const [sqft, setSqft] = useState(s(ov.sqft));
+  const [beds, setBeds] = useState(s(ov.beds));
+  const [baths, setBaths] = useState(s(ov.baths));
+  const [year, setYear] = useState(s(ov.year_built));
+  const [reno, setReno] = useState(s(ov.yr_renovated));
+  const [busy, setBusy] = useState(false);
+
+  const numOrNull = (v: string): number | null => {
+    const t = v.trim();
+    if (t === "") return null;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  async function save() {
+    // A filled field sets an override; a blank clears it (falls back to the base record).
+    const overrides: PropertyOverrides = {
+      condition: condition ? parseInt(condition, 10) : null,
+      sqft: numOrNull(sqft),
+      beds: numOrNull(beds),
+      baths: numOrNull(baths),
+      year_built: numOrNull(year),
+      yr_renovated: numOrNull(reno),
+    };
+    setBusy(true);
+    try {
+      await updateListingProperty(listingId, p.id, overrides);
+      toast.success("Current state updated");
+      onOpenChange(false);
+      onUpdated();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Current state — {p.address_raw}</DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          Restate this property&apos;s current condition for this listing (for example after
+          a renovation). A blank field keeps the value on record. The shared property record
+          is never changed, and any figure derived from these is shown to buyers as
+          seller-stated.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-2">
+            <Label>Condition</Label>
+            <Select value={condition} onValueChange={setCondition}>
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={
+                    p.condition != null ? `${p.condition}/5 on record` : "Select…"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(CONDITION_LABELS).map(([v, label]) => (
+                  <SelectItem key={v} value={v}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <OvField label="Sqft" value={sqft} setValue={setSqft} placeholder={p.sqft} />
+          <OvField label="Beds" value={beds} setValue={setBeds} placeholder={p.beds} />
+          <OvField label="Baths" value={baths} setValue={setBaths} placeholder={p.baths} />
+          <OvField
+            label="Year built"
+            value={year}
+            setValue={setYear}
+            placeholder={p.year_built}
+          />
+          <OvField label="Renovated (year)" value={reno} setValue={setReno} placeholder={null} />
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={save} disabled={busy}>
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PropertyCard({
+  pp,
+  listingId,
+  isMine,
+  onUpdated,
+}: {
+  pp: ListingProp;
+  listingId: number;
+  isMine: boolean;
+  onUpdated: () => void;
+}) {
+  const [editOpen, setEditOpen] = useState(false);
+  const p = pp.property;
+  const eff = pp.effective;
+  const stated = new Set(pp.seller_stated_fields);
+  const cond = eff.condition;
+  const attrs: { key: string; label: string; value: string }[] = [
+    { key: "beds", label: "Beds", value: eff.beds != null ? String(eff.beds) : "—" },
+    { key: "baths", label: "Baths", value: eff.baths != null ? String(eff.baths) : "—" },
+    { key: "sqft", label: "Sqft", value: eff.sqft != null ? eff.sqft.toLocaleString() : "—" },
+    {
+      key: "lot",
+      label: "Lot",
+      value: p.lot_size_sqft != null ? `${p.lot_size_sqft.toLocaleString()} sqft` : "—",
+    },
+    {
+      key: "year_built",
+      label: "Year built",
+      value: eff.year_built != null ? String(eff.year_built) : "—",
+    },
+    {
+      key: "condition",
+      label: "Condition",
+      value: cond != null ? CONDITION_LABELS[cond] ?? String(cond) : "—",
+    },
+    { key: "grade", label: "Grade", value: eff.grade != null ? String(eff.grade) : "—" },
+    { key: "waterfront", label: "Waterfront", value: p.waterfront ? "Yes" : "No" },
   ];
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">{p.address_raw}</CardTitle>
-        {price != null && (
-          <CardDescription>Asking {fmtMoney(price)}</CardDescription>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-base">{p.address_raw}</CardTitle>
+            {pp.asking_price != null && (
+              <CardDescription>Asking {fmtMoney(pp.asking_price)}</CardDescription>
+            )}
+          </div>
+          {isMine && (
+            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+              Edit current state
+            </Button>
+          )}
+        </div>
+        {stated.size > 0 && (
+          <Badge variant="secondary" className="mt-1 w-fit">
+            Seller-stated: {[...stated].join(", ")}
+          </Badge>
         )}
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
-          {attrs.map(([label, value]) => (
-            <div key={label}>
-              <p className="text-xs text-muted-foreground">{label}</p>
-              <p>{value}</p>
+          {attrs.map((a) => (
+            <div key={a.label}>
+              <p className="text-xs text-muted-foreground">{a.label}</p>
+              <p className={stated.has(a.key) ? "font-medium" : undefined}>
+                {a.value}
+                {stated.has(a.key) && (
+                  <span className="ml-1 text-xs text-amber-600" title="seller-stated">
+                    •
+                  </span>
+                )}
+              </p>
             </div>
           ))}
         </div>
       </CardContent>
+      {isMine && (
+        <PropertyOverrideDialog
+          listingId={listingId}
+          pp={pp}
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          onUpdated={onUpdated}
+        />
+      )}
     </Card>
   );
 }
@@ -299,6 +487,33 @@ function ValuationCard({ id }: { id: number }) {
                   .join(" · ")}
               </p>
             </div>
+            {val.current_value?.point != null && (
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">
+                  Current value (condition-adjusted)
+                </p>
+                <p className="text-lg font-semibold">
+                  {fmtMoney(val.current_value.point)}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {[
+                    val.current_value.arv != null &&
+                      `ARV ${fmtMoney(val.current_value.arv)}`,
+                    val.current_value.est_rehab != null &&
+                      `less rehab ${fmtMoney(val.current_value.est_rehab)}`,
+                    val.current_value.condition != null &&
+                      `condition ${val.current_value.condition}/5`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+                {val.current_value.seller_stated && (
+                  <p className="mt-1 text-xs text-amber-600">
+                    Reflects seller-stated condition (unverified).
+                  </p>
+                )}
+              </div>
+            )}
             {val.comps.length > 0 && (
               <Table>
                 <TableHeader>
@@ -621,6 +836,7 @@ function ListingPhotos({
 export default function ListingDetailPage() {
   const params = useParams<{ id: string }>();
   const id = Number(params.id);
+  const qc = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const { data: me } = useMe();
@@ -717,8 +933,12 @@ export default function ListingDetailPage() {
               {data.properties.map((pp) => (
                 <PropertyCard
                   key={pp.property.id}
-                  p={pp.property}
-                  price={pp.asking_price}
+                  pp={pp}
+                  listingId={data.id}
+                  isMine={isMine}
+                  onUpdated={() =>
+                    qc.invalidateQueries({ queryKey: ["listing", id] })
+                  }
                 />
               ))}
             </div>
