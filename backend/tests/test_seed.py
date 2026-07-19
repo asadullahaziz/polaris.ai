@@ -18,6 +18,8 @@ from catalog import services
 from catalog.management.commands.seed_kc import (
     N_CLUSTERS,
     ROWS_PER_CLUSTER,
+)
+from catalog.management.commands.seed_kc import (
     Command as SeedCommand,
 )
 from catalog.models import Listing, Mandate, Property, Sale
@@ -104,6 +106,7 @@ def test_seed_kc_content_populated():
         prop = lst.listingproperty_set.order_by("sort_order").first().property
         town = prop.address_raw.split(",")[1].strip()
         assert town in lst.description  # composed from THIS property's attributes
+        assert lst.media.filter(kind="photo").exists(), f"listing {lst.id} has no cover photo"
 
     # Every kc persona has bio + company; buyers and sellers carry standing
     # agent_instructions (the live behavior lever); prospects are texture-only.

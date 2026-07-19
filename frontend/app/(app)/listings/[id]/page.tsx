@@ -1,12 +1,13 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Lock, MessageCircle } from "lucide-react";
+import { Building2, ImagePlus, Lock, MessageCircle, Trash2 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { MandateForm } from "@/components/mandate-form";
+import { ACCEPT, uploadPhotoFiles } from "@/components/photo-uploader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,6 +46,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   ApiError,
+  attachListingMedia,
+  deleteListingMedia,
   getListing,
   getValuation,
   openChatWith,
@@ -493,6 +496,128 @@ function ContactSellerDialog({
   );
 }
 
+function ListingPhotos({
+  data,
+  isMine,
+  onOpen,
+}: {
+  data: ListingDetail;
+  isMine: boolean;
+  onOpen: (url: string) => void;
+}) {
+  const qc = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  if (data.media.length === 0 && !isMine) return null;
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["listing", data.id] });
+    qc.invalidateQueries({ queryKey: ["listings"] }); // cover_url may change
+  };
+
+  const onFiles = async (list: FileList | null) => {
+    const files = Array.from(list ?? []);
+    if (files.length === 0) return;
+    setBusy(true);
+    try {
+      const urls = await uploadPhotoFiles(files);
+      if (urls.length > 0) {
+        await attachListingMedia(
+          data.id,
+          urls.map((url) => ({ kind: "photo" as const, url })),
+        );
+        refresh();
+        toast.success(urls.length === 1 ? "Photo added" : "Photos added");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not add photos");
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const onDelete = async (mediaId: number) => {
+    setDeletingId(mediaId);
+    try {
+      await deleteListingMedia(data.id, mediaId);
+      refresh();
+      toast.success("Photo removed");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not remove the photo",
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-medium">Photos</h2>
+        {isMine && (
+          <>
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              accept={ACCEPT}
+              className="hidden"
+              onChange={(e) => onFiles(e.target.files)}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+            >
+              <ImagePlus className="mr-1.5 h-4 w-4" />
+              {busy ? "Uploading…" : "Add photos"}
+            </Button>
+          </>
+        )}
+      </div>
+      {data.media.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No photos yet.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {data.media.map((m) => (
+            <div key={m.id} className="group relative">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={m.url}
+                alt={`Listing photo ${m.sort_order + 1}`}
+                className="h-28 w-full cursor-pointer rounded-md object-cover"
+                onClick={() => onOpen(m.url)}
+              />
+              {isMine && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="icon"
+                  aria-label="Remove photo"
+                  className="absolute right-1 top-1 h-6 w-6 opacity-0 transition-opacity group-hover:opacity-100"
+                  disabled={deletingId === m.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(m.id);
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ListingDetailPage() {
   const params = useParams<{ id: string }>();
   const id = Number(params.id);
@@ -598,23 +723,7 @@ export default function ListingDetailPage() {
               ))}
             </div>
 
-            {data.media.length > 0 && (
-              <div className="space-y-3">
-                <h2 className="text-lg font-medium">Photos</h2>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {data.media.map((m) => (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      key={m.id}
-                      src={m.url}
-                      alt={`Listing photo ${m.sort_order + 1}`}
-                      className="h-28 w-full cursor-pointer rounded-md object-cover"
-                      onClick={() => setLightbox(m.url)}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
+            <ListingPhotos data={data} isMine={isMine} onOpen={setLightbox} />
           </div>
 
           {isMine && (

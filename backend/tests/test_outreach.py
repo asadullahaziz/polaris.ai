@@ -418,7 +418,9 @@ def test_launch_outreach_campaign_tool_is_registered_and_confirm_gated():
     names = {t.name for t in tools_for("copilot", seller.id)}
     assert "launch_outreach_campaign" in names and "rank_buyers_for_listings" in names
     assert "launch_outreach_campaign" in WRITE_TOOL_NAMES
-    assert "launch_outreach" not in names  # ranking is a separate read tool, not bundled into the write
+    assert (
+        "launch_outreach" not in names
+    )  # ranking is a separate read tool, not bundled into the write
 
 
 @pytest.mark.django_db

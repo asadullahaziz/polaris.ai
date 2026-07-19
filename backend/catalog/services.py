@@ -15,7 +15,9 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Max
 
+from . import storage
 from .models import BuyBox, BuyBoxGeo, Listing, ListingMedia, ListingProperty, Mandate, Property
 
 
@@ -209,6 +211,37 @@ def update_listing(listing: Listing, data: dict) -> Listing:
     if data.get("mandate") is not None:
         set_mandate_for_listing(listing, data["mandate"])
     return listing
+
+
+# --- listing media (create-time attach is inline in create_listing; these are
+#     the manage-photos-on-an-existing-listing seam) ---------------------------
+@transaction.atomic
+def add_listing_media(listing: Listing, items: list[dict]) -> list[ListingMedia]:
+    """Append media rows to `listing`. Items without a sort_order continue after
+    the current max, so newly added photos land after existing ones."""
+    current_max = listing.media.aggregate(m=Max("sort_order"))["m"]
+    next_order = 0 if current_max is None else current_max + 1
+    return [
+        ListingMedia.objects.create(
+            listing=listing,
+            kind=m.get("kind", "photo"),
+            url=m["url"],
+            sort_order=m.get("sort_order", next_order + i),
+        )
+        for i, m in enumerate(items)
+    ]
+
+
+def remove_listing_media(listing: Listing, media_id: int) -> bool:
+    """Delete one media row (False if it isn't on this listing), then best-effort
+    delete the backing object when the URL points into our bucket."""
+    row = listing.media.filter(id=media_id).first()
+    if row is None:
+        return False
+    url = row.url
+    row.delete()
+    storage.delete_object_for_url(url)
+    return True
 
 
 # --- mandate (deal settings, set in the listing UI) ---------------------------

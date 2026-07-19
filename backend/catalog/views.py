@@ -8,25 +8,62 @@ the copilot tools call, so the agent and the API stay in lockstep.
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.db.models import Q
+from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from matching.engine import estimate_value, get_comps, rank_buyers_for_attrs
 
-from . import services
+from . import services, storage
 from .models import Listing
 from .serializers import (
     BuyBoxWriteSerializer,
     ListingCreateSerializer,
     ListingDetailSerializer,
+    ListingMediaAttachSerializer,
     ListingSummarySerializer,
     ListingUpdateSerializer,
     MandateSerializer,
+    MediaPresignRequestSerializer,
+    MediaPresignResponseSerializer,
 )
+
+
+class MediaPresignView(APIView):
+    """POST /api/uploads/presign → a presigned direct-to-storage PUT for a listing
+    photo. The object key is user-scoped + random (listings/{user_id}/{uuid}.{ext})
+    and the ContentType is signed, so the browser must PUT with exactly the
+    returned headers. The upload itself never touches this backend."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "uploads"
+
+    @extend_schema(
+        request=MediaPresignRequestSerializer,
+        responses={200: MediaPresignResponseSerializer},
+    )
+    def post(self, request):
+        ser = MediaPresignRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        ct = ser.validated_data["content_type"]
+        key = storage.build_key(request.user.id, ct)
+        return Response(
+            {
+                "upload_url": storage.presign_put(key, ct),
+                "public_url": storage.public_url(key),
+                "key": key,
+                "headers": {"Content-Type": ct},
+                "expires_in": settings.STORAGE_PRESIGN_EXPIRY,
+                "max_bytes": settings.STORAGE_MAX_UPLOAD_MB * 1024 * 1024,
+            }
+        )
 
 
 class PropertyLookupView(APIView):
@@ -173,6 +210,33 @@ class ListingViewSet(
         ser = MandateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         return Response(services.set_mandate_for_listing(listing, ser.validated_data))
+
+    @action(detail=True, methods=["post"], url_path="media")
+    def media(self, request, pk=None):
+        """POST /api/listings/{id}/media/ — attach photos to an existing listing."""
+        listing = self.get_object()  # 404s if not owned
+        ser = ListingMediaAttachSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        services.add_listing_media(listing, ser.validated_data["media"])
+        detail = self.get_queryset().get(id=listing.id)
+        return Response(
+            ListingDetailSerializer(detail, context={"request": request}).data, status=201
+        )
+
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path=r"media/(?P<media_id>\d+)",
+        url_name="media-delete",
+    )
+    def delete_media(self, request, pk=None, media_id=None):
+        """DELETE /api/listings/{id}/media/{media_id}/ — remove a photo, with
+        best-effort storage cleanup for our-bucket URLs."""
+        listing = self.get_object()  # 404s if not owned
+        if not services.remove_listing_media(listing, int(media_id)):
+            return Response({"detail": "media not found"}, status=404)
+        detail = self.get_queryset().get(id=listing.id)
+        return Response(ListingDetailSerializer(detail, context={"request": request}).data)
 
 
 class BuyBoxViewSet(viewsets.ViewSet):

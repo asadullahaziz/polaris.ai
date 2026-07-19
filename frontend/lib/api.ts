@@ -265,6 +265,12 @@ export type MandateInput = {
   instructions?: string;
 };
 
+export type MediaItemInput = {
+  kind?: "photo" | "document";
+  url: string;
+  sort_order?: number;
+};
+
 export type ListingCreateInput = {
   title?: string;
   description?: string;
@@ -272,7 +278,7 @@ export type ListingCreateInput = {
   bundle_type?: "single" | "package" | "portfolio";
   status?: string;
   properties: PropertyItemInput[];
-  media?: { kind?: "photo" | "document"; url: string; sort_order?: number }[];
+  media?: MediaItemInput[];
   mandate?: MandateInput;
 };
 
@@ -295,6 +301,54 @@ export const updateListing = (
   apiFetch(`/api/listings/${id}/`, {
     method: "PATCH",
     body: JSON.stringify(body),
+  }).then((r) => json<ListingDetail>(r));
+
+// ---- Photo upload (presigned direct-to-storage) -------------------------------
+export type PresignResponse = {
+  upload_url: string;
+  public_url: string;
+  key: string;
+  headers: Record<string, string>;
+  expires_in: number;
+  max_bytes: number;
+};
+
+export const presignUpload = (body: {
+  filename: string;
+  content_type: string;
+  size?: number;
+}) =>
+  apiFetch("/api/uploads/presign", {
+    method: "POST",
+    body: JSON.stringify(body),
+  }).then((r) => json<PresignResponse>(r));
+
+// Raw fetch to MinIO/S3 — deliberately NOT apiFetch: no session cookie or CSRF
+// header may leak to the storage host, and the Content-Type must be exactly the
+// signed one (the boundary-free file body, not JSON).
+export async function uploadToStorage(
+  presign: PresignResponse,
+  file: File,
+): Promise<string> {
+  const res = await fetch(presign.upload_url, {
+    method: "PUT",
+    body: file,
+    headers: presign.headers,
+    credentials: "omit",
+  });
+  if (!res.ok) throw new ApiError(res.status, "Upload failed");
+  return presign.public_url;
+}
+
+export const attachListingMedia = (id: number, media: MediaItemInput[]) =>
+  apiFetch(`/api/listings/${id}/media/`, {
+    method: "POST",
+    body: JSON.stringify({ media }),
+  }).then((r) => json<ListingDetail>(r));
+
+export const deleteListingMedia = (id: number, mediaId: number) =>
+  apiFetch(`/api/listings/${id}/media/${mediaId}/`, {
+    method: "DELETE",
   }).then((r) => json<ListingDetail>(r));
 
 export type Comp = {

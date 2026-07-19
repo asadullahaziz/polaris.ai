@@ -105,12 +105,10 @@ _TOWN_FLAVOR = {
     "Kirkwell": "Kirkwell is quiet and established, mostly owner occupied with good schools.",
     "Bellamy": "Bellamy is the premium pocket of the county, larger homes and patient money.",
     "Maple Hollow": (
-        "Maple Hollow trades at family friendly prices with acreage style lots on "
-        "the town edge."
+        "Maple Hollow trades at family friendly prices with acreage style lots on " "the town edge."
     ),
     "Carverton": (
-        "Carverton is an affordable growth market where first time buyers and "
-        "landlords compete."
+        "Carverton is an affordable growth market where first time buyers and " "landlords compete."
     ),
     "Fernway": "Fernway has some of the most accessible price points in the county and rents well.",
     "Renwick": "Renwick mixes older housing stock with new infill, plenty of value add activity.",
@@ -187,8 +185,7 @@ SELLER_PERSONAS = [
     },
     {  # kc_seller_2 — Rosa Delgado
         "bio": (
-            "Managing the family estate portfolio, selling a few long held houses "
-            "the right way."
+            "Managing the family estate portfolio, selling a few long held houses " "the right way."
         ),
         "company": "Delgado Estates",
         "agent_instructions": (
