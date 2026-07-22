@@ -114,6 +114,26 @@ _AUTO_TITLE = (
     "Write a 3-6 word title (no quotes, no trailing punctuation) for a "
     "real-estate chat that begins with:\n{{first_message}}"
 )
+# Eval-only judge prompts (LLM-as-a-judge). Registered as surfaces so they are
+# versioned, code-fallback'd, and byte-parity tested like every runtime prompt;
+# used only by the offline eval suite (evals.judges), never on a live agent turn.
+_JUDGE_VOICE = (
+    "You are grading whether a short real-estate reply reads like it was typed by a busy "
+    "human agent, not by an AI. Score 1.0 when it sounds natural and human. Score lower as "
+    "it drifts toward robotic phrasing, AI or assistant self-reference (for example "
+    "'assistant', 'AI', 'on behalf of', 'while away'), em or en dashes, or stiff "
+    "over-formality. Judge ONLY the voice, not whether the content is correct.\n\n"
+    "Message:\n{{draft}}"
+)
+_JUDGE_HELPFULNESS = (
+    "You are grading how helpful a real-estate reply is as a response to the counterparty's "
+    "message. Score 1.0 when it directly and usefully addresses what they asked or honestly "
+    "moves the conversation forward. Score lower when it is evasive, off topic, or unhelpful. "
+    "A safe, honest deferral (for example, offering to check and follow up) is still "
+    "reasonably helpful. Judge helpfulness only.\n\n"
+    "Counterparty message:\n{{inbound}}\n\n"
+    "Reply being graded:\n{{draft}}"
+)
 
 SURFACES: dict[str, Surface] = {
     s.name: s
@@ -185,6 +205,9 @@ SURFACES: dict[str, Surface] = {
             variables=["label", "sent", "skipped", "failed"],
         ),
         _surface("copilot/auto-title", [_AUTO_TITLE], variables=["first_message"]),
+        # Eval-only LLM-as-a-judge prompts (offline eval suite).
+        _surface("eval/judge-voice", [_JUDGE_VOICE], variables=["draft"]),
+        _surface("eval/judge-helpfulness", [_JUDGE_HELPFULNESS], variables=["inbound", "draft"]),
     ]
 }
 

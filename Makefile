@@ -1,5 +1,5 @@
 # Polaris AI — dev convenience targets. The canonical bring-up is `docker compose up`.
-.PHONY: up down build logs ps test migrate makemigrations shell psql spike-test fmt seed seed-reset sync-prompts
+.PHONY: up down build logs ps test migrate makemigrations shell psql spike-test fmt seed seed-reset sync-prompts sync-eval-datasets evals
 
 start up:            ## Bring the whole stack up (build if needed)
 	docker compose up --build
@@ -34,6 +34,12 @@ seed-reset:    ## Rebuild the seed from scratch (fresh dates)
 
 sync-prompts:  ## Push code prompts to Langfuse (create-if-missing; --update/--promote via ARGS)
 	docker compose exec backend python manage.py sync_prompts $(ARGS)
+
+sync-eval-datasets:  ## Push code eval datasets to Langfuse (idempotent; --surface via ARGS)
+	docker compose exec backend python manage.py sync_eval_datasets $(ARGS)
+
+evals:         ## Run the offline agent eval suite (LIVE LLM; needs provider + Langfuse keys). ARGS="--surface responder --run-name baseline"
+	docker compose exec backend python manage.py run_evals $(ARGS)
 
 migrate:
 	docker compose exec backend python manage.py migrate
