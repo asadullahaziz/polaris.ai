@@ -36,7 +36,7 @@ def _clamp(x: float) -> float:
         return 0.0
 
 
-async def _judge(surface: str, score_name: str, **variables) -> Evaluation:
+async def _judge(surface: str, score_name: str, **variables) -> Evaluation | list:
     try:
         prompt = await prompt_store.acompile(surface, **variables)
         model = get_model("workhorse").with_structured_output(JudgeScore)
@@ -44,20 +44,22 @@ async def _judge(surface: str, score_name: str, **variables) -> Evaluation:
         return Evaluation(name=score_name, value=_clamp(verdict.score), comment=verdict.reason)
     except Exception as exc:  # noqa: BLE001 - a judge failure must not fail the run
         logj.warning("judge %s failed: %s", score_name, exc)
-        return Evaluation(name=score_name, value=None, comment=f"judge error: {exc}")
+        return []  # no score — the API rejects null values; absence = "not judged"
 
 
-async def judge_voice(*, output, **_) -> Evaluation:
+async def judge_voice(*, output, **_) -> Evaluation | list:
     body = (output or {}).get("body") or ""
     if not body.strip():
-        return Evaluation(name="responder-voice", value=None, comment="no body")
+        return []  # n/a — no body to judge
     return await _judge("eval/judge-voice", "responder-voice", draft=body)
 
 
-async def judge_helpfulness(*, input, output, **_) -> Evaluation:  # noqa: A002 - SDK kwarg name
+async def judge_helpfulness(
+    *, input, output, **_
+) -> Evaluation | list:  # noqa: A002 - SDK kwarg name
     body = (output or {}).get("body") or ""
     if not body.strip():
-        return Evaluation(name="responder-helpfulness", value=None, comment="no body")
+        return []  # n/a — no body to judge
     inbound = (input or {}).get("inbound") or ""
     return await _judge(
         "eval/judge-helpfulness", "responder-helpfulness", inbound=inbound, draft=body

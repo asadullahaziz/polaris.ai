@@ -59,7 +59,7 @@ def test_style_ok_reuses_style_gate():
     assert (
         scorers.responder_style_ok(output={"body": "As an AI, I cannot."}).value == 0.0
     )  # self-narration
-    assert scorers.responder_style_ok(output={"body": ""}).value is None  # n/a, no body
+    assert scorers.responder_style_ok(output={"body": ""}) == []  # n/a, no body -> no score
 
 
 def test_outcome_match():
@@ -88,12 +88,10 @@ def test_escalation_safe():
         ).value
         == 0.0
     )
-    # Not an escalation scenario -> n/a.
+    # Not an escalation scenario -> n/a -> no score emitted.
     assert (
-        scorers.responder_escalation_safe(
-            output={"agent_message_posted": True}, expected_output={}
-        ).value
-        is None
+        scorers.responder_escalation_safe(output={"agent_message_posted": True}, expected_output={})
+        == []
     )
 
 
@@ -110,8 +108,8 @@ def test_policy_ok_rechecks_gate_only_on_sent():
     assert (
         scorers.responder_policy_ok(output=bad).value == 0.0
     )  # below floor -> would-be leak of bound
-    # Not sent -> n/a (a gate failure escalated, which is correct).
-    assert scorers.responder_policy_ok(output={"outcome": "escalated"}).value is None
+    # Not sent -> n/a -> no score (a gate failure escalated, which is correct).
+    assert scorers.responder_policy_ok(output={"outcome": "escalated"}) == []
 
 
 def test_screen_confusion_cells():
@@ -125,12 +123,12 @@ def test_screen_confusion_cells():
     assert (
         scorers.screen_exact_match(output=inj, expected_output={"suspicious": False}).value == 0.0
     )
-    # Invalid model output -> excluded.
+    # Invalid model output -> excluded (no score emitted).
     assert (
         scorers.screen_exact_match(
             output={"suspicious": None}, expected_output={"suspicious": True}
-        ).value
-        is None
+        )
+        == []
     )
 
 
@@ -175,10 +173,8 @@ def test_triage_exact_match():
         == 0.0
     )
     assert (
-        scorers.triage_exact_match(
-            output={"intent": None}, expected_output={"intent": "off_topic"}
-        ).value
-        is None
+        scorers.triage_exact_match(output={"intent": None}, expected_output={"intent": "off_topic"})
+        == []
     )
 
 

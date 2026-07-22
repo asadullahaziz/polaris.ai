@@ -87,11 +87,11 @@ class Command(BaseCommand):
 
 
 def _format_result(result) -> str:
-    for attr in ("format",):
-        fn = getattr(result, attr, None)
-        if callable(fn):
-            try:
-                return fn()
-            except Exception:  # noqa: BLE001
-                break
+    fn = getattr(result, "format", None)
+    if callable(fn):
+        try:
+            # The SDK's format() emits literal "\n" sequences (upstream bug) — unescape.
+            return fn().replace("\\n", "\n")
+        except Exception:  # noqa: BLE001
+            pass
     return str(result)
